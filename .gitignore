@@ -1,0 +1,9 @@
+node_modules/
+dist/
+.cache/
+.env*
+!.env.example
+.local/
+backend/
+artifacts/
+*.log

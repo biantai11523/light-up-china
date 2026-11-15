@@ -1,0 +1,23 @@
+{
+  "name": "light-up-china",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "build": "vite build",
+    "preview": "vite preview --host 127.0.0.1",
+    "test": "node --test tests/*.test.mjs",
+    "data:fetch": "node scripts/fetch-map.mjs"
+  },
+  "dependencies": {
+    "d3-geo": "^3.1.1",
+    "d3-selection": "^3.0.0",
+    "d3-zoom": "^3.0.0"
+  },
+  "devDependencies": {
+    "@resvg/resvg-js": "^2.6.2",
+    "happy-dom": "^21.0.4",
+    "vite": "^7.0.0"
+  }
+}
