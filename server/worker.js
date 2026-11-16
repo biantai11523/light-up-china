@@ -26,6 +26,24 @@ export function createWorker(validCityIds) {
           const payload=btoa(JSON.stringify({id:crypto.randomUUID(),expires:Date.now()+3600000}));
           return json({token:`${payload}.${await signature(payload,env.SESSION_SECRET)}`});
         }
+        if(url.pathname==='/api/cities/batch' && request.method==='POST') {
+          if(!await authenticated(request,env))return json({error:'会话已过期，请重试'},401);
+          if(Number(request.headers.get('Content-Length') || 0)>524288)return json({error:'批量内容过长'},413);
+          const raw=await request.text();if(raw.length>524288)return json({error:'批量内容过长'},413);
+          let input;try{input=JSON.parse(raw);}catch{return json({error:'记录格式有误'},400);}
+          const updates=input?.updates;
+          if(!Array.isArray(updates)||!updates.length||updates.length>validCities.size)return json({error:'请选择有效的城市'},400);
+          const ids=new Set(),operations=new Set();
+          for(const update of updates){
+            const error=validate(update);
+            if(error)return json({error},400);
+            if(typeof update.id!=='string'||!validCities.has(update.id))return json({error:'包含无效城市'},400);
+            if(ids.has(update.id)||operations.has(update.operationId))return json({error:'城市或操作编号重复'},400);
+            ids.add(update.id);operations.add(update.operationId);
+          }
+          if(!await limit(env,request,'write',60))return json({error:'操作频繁，请一分钟后再试'},429);
+          return await saveBatch(env.DB,updates,json);
+        }
         const match=url.pathname.match(/^\/api\/cities\/(\d{6})$/);
         if(match && request.method==='PUT') {
           if(!await authenticated(request,env))return json({error:'会话已过期，请重试'},401);
@@ -76,13 +94,61 @@ export function validate(input){
   if(!Number.isSafeInteger(input.expectedVersion)||input.expectedVersion<0)return '版本号有误';
   if(typeof input.operationId!=='string'||!/^[\da-f]{8}-[\da-f]{4}-[\da-f]{4}-[\da-f]{4}-[\da-f]{12}$/i.test(input.operationId))return '操作编号有误';
   if(typeof input.author!=='string'||!input.author.trim()||input.author.length>24)return '称呼需要 1–24 个字';
-  if(typeof input.note!=='string'||input.note.length>240)return '记忆最多 240 个字';
+  if(typeof input.note!=='string'||input.note.length>240)return '备注最多 240 个字';
   if(typeof input.date!=='string')return '日期格式有误';
   if(input.date){
     const day=new Date(`${input.date}T00:00:00.000Z`);
     if(!/^\d{4}-\d{2}-\d{2}$/.test(input.date)||Number.isNaN(day.getTime())||day.toISOString().slice(0,10)!==input.date||input.date<'1900-01-01'||day.getTime()>Date.now()+86400000)return '请填写有效的到访日期';
   }
   return null;
+}
+async function saveBatch(db,updates,json){
+  const now=new Date().toISOString();
+  const payload=JSON.stringify(updates.map(row=>({...row,active:row.active?1:0,author:row.author.trim(),note:row.note.trim(),updatedAt:now})));
+  const currentQuery=()=>db.prepare("SELECT v.* FROM visits v JOIN json_each(?) r ON v.city_id=json_extract(r.value,'$.id')").bind(payload);
+  const historyQuery=()=>db.prepare("SELECT a.* FROM activity a JOIN json_each(?) r ON a.operation_id=json_extract(r.value,'$.operationId')").bind(payload);
+  const recordsFrom=rows=>Object.fromEntries(rows.map(row=>[row.city_id,toRecord(row)]));
+  const reply=(rows,current,idempotent=false)=>json({records:recordsFrom(rows),current:recordsFrom(current),idempotent});
+  const prior=(await historyQuery().all()).results;
+  if(prior.length){
+    const exact=prior.length===updates.length&&updates.every(row=>prior.some(p=>p.operation_id===row.operationId&&p.city_id===row.id));
+    if(!exact)return json({error:'操作编号已被使用，请重新选择后保存'},400);
+    return reply(prior,(await currentQuery().all()).results,true);
+  }
+  // Materialize the full input and its version check before inserting any row.
+  // A stale version prevents the entire batch, including its history, from being written.
+  const result=await db.batch([
+    db.prepare(`WITH requested AS MATERIALIZED (
+      SELECT json_extract(value,'$.id') AS city_id,json_extract(value,'$.active') AS active,
+      json_extract(value,'$.expectedVersion') AS expected_version,json_extract(value,'$.date') AS date,
+      json_extract(value,'$.note') AS note,json_extract(value,'$.author') AS author,
+      json_extract(value,'$.updatedAt') AS updated_at,json_extract(value,'$.operationId') AS operation_id
+      FROM json_each(?)
+    ), permitted AS MATERIALIZED (
+      SELECT 1 AS allowed WHERE NOT EXISTS (
+        SELECT 1 FROM requested r LEFT JOIN visits v ON v.city_id=r.city_id
+        WHERE coalesce(v.version,0)<>r.expected_version
+      ) AND NOT EXISTS (SELECT 1 FROM requested r JOIN activity a ON a.operation_id=r.operation_id)
+    )
+    INSERT INTO visits (city_id,active,version,date,note,author,updated_at,last_operation)
+    SELECT r.city_id,r.active,r.expected_version+1,r.date,r.note,r.author,r.updated_at,r.operation_id
+    FROM requested r CROSS JOIN permitted p WHERE p.allowed=1
+    ON CONFLICT(city_id) DO UPDATE SET active=excluded.active,version=excluded.version,date=excluded.date,
+      note=excluded.note,author=excluded.author,updated_at=excluded.updated_at,last_operation=excluded.last_operation
+    RETURNING *`).bind(payload),
+    db.prepare(`INSERT OR IGNORE INTO activity (operation_id,city_id,active,version,date,note,author,updated_at)
+      SELECT v.last_operation,v.city_id,v.active,v.version,v.date,v.note,v.author,v.updated_at
+      FROM visits v JOIN json_each(?) r ON v.city_id=json_extract(r.value,'$.id')
+      AND v.last_operation=json_extract(r.value,'$.operationId')`).bind(payload),
+    currentQuery(),historyQuery()
+  ]);
+  const changed=result[0].results,current=result[2].results,history=result[3].results;
+  if(changed.length===updates.length)return reply(changed,current);
+  // Handle an identical retry that raced the first successful request.
+  if(history.length===updates.length&&updates.every(row=>history.some(p=>p.operation_id===row.operationId&&p.city_id===row.id)))return reply(history,current,true);
+  const currentRecords=recordsFrom(current);
+  return json({error:'部分城市已有新修改，本批次未保存',current:currentRecords,
+    conflicts:updates.filter(row=>(currentRecords[row.id]?.version||0)!==row.expectedVersion).map(row=>row.id)},409);
 }
 async function signature(payload,secret){
   const key=await crypto.subtle.importKey('raw',encoder.encode(secret),{name:'HMAC',hash:'SHA-256'},false,['sign']);

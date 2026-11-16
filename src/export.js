@@ -61,8 +61,11 @@ export function createMapSnapshot(container, summary, { date = new Date(), demo 
   const width = Math.round(rect.width || 700);
   const stageHeight = Math.round(rect.height || 490);
   const height = stageHeight + 150;
-  const map = standaloneMap(container.querySelector('.map-svg'), { width, height: stageHeight });
-  attributes(map, { x: 0, y: 84, width, height: stageHeight });
+  const mapRect = container.querySelector('.map-svg').getBoundingClientRect();
+  const mapHeight = Math.round(mapRect.height || stageHeight - 100);
+  const mapWidth = Math.round(mapRect.width || width);
+  const map = standaloneMap(container.querySelector('.map-svg'), { width: mapWidth, height: mapHeight });
+  attributes(map, { x: 0, y: 84, width: mapWidth, height: mapHeight });
   const insetRect = container.querySelector('.sea-inset').getBoundingClientRect();
   const insetWidth = Math.round(insetRect.width || (width < 500 ? 62 : 83));
   const insetHeight = Math.round(insetRect.height || (width < 500 ? 87 : 119));
@@ -94,7 +97,6 @@ export function createMapSnapshot(container, summary, { date = new Date(), demo 
     <path d="M16 ${legendY + 18}h20" stroke="#3b4436" stroke-width="1.6"/><text x="42" y="${legendY + 21}" font-size="9" fill="#626b5a">省界</text>
     <path d="M87 ${legendY + 18}h20" stroke="#929986" stroke-width=".7"/><text x="113" y="${legendY + 21}" font-size="9" fill="#626b5a">市界</text>
     <text x="16" y="${height - 9}" font-size="8" fill="#757d6d">边界数据：DataV.GeoAtlas</text>
-    <rect x="1" y="1" width="${width - 2}" height="${height - 2}" fill="none" stroke="${COLORS.ink}" stroke-width="2"/>
   </svg>`;
   const scale = Math.min(3, 3840 / Math.max(width, height));
   return { svg, width, height, pixelWidth: Math.round(width * scale), pixelHeight: Math.round(height * scale),

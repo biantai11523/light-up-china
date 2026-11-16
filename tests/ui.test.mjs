@@ -11,7 +11,7 @@ test('mobile DOM flow: search, select, save a memory, and see it from another vi
     assert.equal(d.querySelectorAll('[data-pick]').length,1);
     d.querySelector('[data-pick="330100"]').click();assert.match(d.querySelector('#city-panel').textContent,/杭州市/);
     d.querySelector('[data-action="edit"]').click();
-    d.querySelector('[name="author"]').value='同行 A';d.querySelector('[name="date"]').value='2025-05-01';d.querySelector('[name="note"]').value='日落 <img src=x onerror=alert(1)>';
+    d.querySelector('[name="author"]').value='同行 A';assert.equal(d.querySelector('[name="date"]'),null);d.querySelector('[name="note"]').value='日落 <img src=x onerror=alert(1)>';
     d.querySelector('form').dispatchEvent(new w.Event('submit',{bubbles:true,cancelable:true}));
     await until(()=>d.querySelector('#stat-count').textContent==='01');
     assert.equal(d.querySelector('#city-panel img'),null);assert.match(d.querySelector('.place-note').textContent,/<img/);

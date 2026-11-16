@@ -6,9 +6,10 @@ import { createMapSnapshot } from '../src/export.js';
 import { fixture } from './helpers.mjs';
 import { openApp, until } from './ui-harness.mjs';
 
-function measureMap(document,width=354,height=360){
-  document.querySelector('.map-stage').getBoundingClientRect=()=>({width,height,left:18,top:200});
-  document.querySelector('.sea-inset').getBoundingClientRect=()=>({width:62,height:87,left:18+width-73,top:200+height-101});
+function measureMap(document,width=390,height=456){
+  document.querySelector('.map-stage').getBoundingClientRect=()=>({width,height,left:0,top:200});
+  document.querySelector('.map-svg').getBoundingClientRect=()=>({width,height:height-100,left:0,top:200});
+  document.querySelector('.sea-inset').getBoundingClientRect=()=>({width:62,height:88,left:width-78,top:200+height-92});
 }
 const meta={count:18,provinces:14,total:370};
 test('current-view export keeps zoom, selections, borders and inset, and rasterizes into a valid PNG',async()=>{
@@ -17,11 +18,11 @@ test('current-view export keeps zoom, selections, borders and inset, and rasteri
     measureMap(d);d.querySelector('[data-action="demo"]').click();
     const card=d.querySelector('.map-card');
     const nationwide=createMapSnapshot(card,meta,{demo:true,date:new Date('2026-11-16T12:00:00Z')});
-    assert.equal(nationwide.pixelWidth,1062);assert.equal(nationwide.pixelHeight,1530);assert.match(nationwide.svg,/示例/);
+    assert.equal(nationwide.pixelWidth,1170);assert.equal(nationwide.pixelHeight,1818);assert.match(nationwide.svg,/示例/);
     assert.ok(!/<foreignObject|<image|https?:\/\/(?!www.w3.org)/.test(nationwide.svg));
     assert.match(nationwide.svg,/fill="#c5f567"/);assert.match(nationwide.svg,/南海诸岛/);
     const png=new Resvg(nationwide.svg,{fitTo:{mode:'width',value:nationwide.pixelWidth}}).render().asPng();
-    assert.equal(png.subarray(1,4).toString(),'PNG');assert.equal(png.readUInt32BE(16),1062);assert.equal(png.readUInt32BE(20),1530);assert.ok(png.length>30000);
+    assert.equal(png.subarray(1,4).toString(),'PNG');assert.equal(png.readUInt32BE(16),1170);assert.equal(png.readUInt32BE(20),1818);assert.ok(png.length>30000);
     await mkdir('artifacts',{recursive:true});await writeFile('artifacts/export-mobile.png',png);
     d.querySelector('[data-action="search"]').click();d.querySelector('[data-pick="330100"]').click();
     const transform=d.querySelector('.map-svg>g').getAttribute('transform');
