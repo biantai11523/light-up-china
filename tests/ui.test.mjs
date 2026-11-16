@@ -1,27 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { build } from 'esbuild';
-import { Window } from 'happy-dom';
 import { fixture } from './helpers.mjs';
-const bundled=await build({entryPoints:['src/main.js'],bundle:true,write:false,format:'iife',loader:{'.css':'empty'},define:{'import.meta.env.VITE_API_URL':'"https://api.test"','import.meta.env.BASE_URL':'"/"'}});
-const script=bundled.outputFiles[0].text;
-async function until(condition){for(let i=0;i<100;i++){if(condition())return;await new Promise(r=>setTimeout(r,10));}throw new Error('DOM condition timed out');}
-async function openApp(f,{offline=false,width=390}={}){
-  const window=new Window({url:'https://biantai11523.github.io/light-up-china/',width,height:844});
-  window.document.body.innerHTML='<div id="app"></div><div id="modal-root"></div><div id="toast"></div>';
-  window.HTMLElement.prototype.scrollIntoView=function(){};
-  window.SVGElement.prototype.scrollIntoView=function(){};
-  window.fetch=async(url,options)=>{
-    if(String(url).endsWith('/data/china.json'))return Response.json(f.map);
-    if(offline)throw new TypeError('Offline');
-    const {signal,...rest}=options || {};
-    return f.request(new URL(url).pathname,rest);
-  };
-  window.eval(script);
-  await until(()=>window.document.querySelectorAll('.map-svg .city-shape').length===370);
-  if(!offline){try{await until(()=>window.document.querySelector('#sync-status').textContent.includes('已同步'));}catch(error){await window.happyDOM.abort();throw error;}}
-  return window;
-}
+import { openApp, until } from './ui-harness.mjs';
 test('mobile DOM flow: search, select, save a memory, and see it from another visitor',async()=>{
   const f=fixture(),w=await openApp(f),d=w.document;
   try{
@@ -48,4 +28,34 @@ test('demo changes never reach the shared database',async()=>{
 test('offline state is visible and cannot claim a successful shared save',async()=>{
  const f=fixture(),w=await openApp(f,{offline:true}),d=w.document;
  try{await until(()=>d.querySelector('#offline-banner').classList.contains('visible'));assert.ok(!d.querySelector('#sync-status').textContent.includes('已同步'));assert.equal(d.querySelector('#stat-count').textContent,'00');}finally{await w.happyDOM.abort();f.db.close();}
+});
+test('selecting on the map opens a mobile action bar without scrolling the page',async()=>{
+  const f=fixture();let scrolls=0;
+  const w=await openApp(f,{configure(w){w.HTMLElement.prototype.scrollIntoView=()=>scrolls++;w.SVGElement.prototype.scrollIntoView=()=>scrolls++;}}),d=w.document;
+  try{
+    d.querySelector('.map-svg [data-city="330100"]').dispatchEvent(new w.MouseEvent('click',{bubbles:true}));
+    assert.equal(scrolls,0);assert.equal(d.querySelector('#selection-dock').hidden,false);
+    assert.match(d.querySelector('#selection-dock').textContent,/杭州市/);
+    d.querySelector('#selection-dock [data-action="edit"]').click();assert.ok(d.querySelector('#visit-form'));
+    d.querySelector('[data-close]').click();d.querySelector('[data-action="deselect"]').click();assert.equal(d.querySelector('#selection-dock').hidden,true);
+  }finally{await w.happyDOM.abort();f.db.close();}
+});
+test('dragging the map does not accidentally select a city at pointer release',async()=>{
+  const f=fixture(),w=await openApp(f),d=w.document,svg=d.querySelector('.map-svg');
+  try{
+    svg.dispatchEvent(new w.PointerEvent('pointerdown',{pointerId:1,clientX:100,clientY:100}));
+    svg.dispatchEvent(new w.PointerEvent('pointermove',{pointerId:1,clientX:130,clientY:125}));
+    svg.dispatchEvent(new w.PointerEvent('pointerup',{pointerId:1,clientX:130,clientY:125}));
+    d.querySelector('.map-svg [data-city="330100"]').dispatchEvent(new w.MouseEvent('click',{bubbles:true}));
+    assert.equal(d.querySelector('#selection-dock').hidden,true);
+  }finally{await w.happyDOM.abort();f.db.close();}
+});
+test('search selection scrolls once, and reduced motion is respected',async()=>{
+  const f=fixture();const scrolls=[];
+  const w=await openApp(f,{configure(w){
+    w.HTMLElement.prototype.scrollIntoView=options=>scrolls.push(options);
+    const original=w.matchMedia.bind(w);
+    w.matchMedia=query=>query==='(prefers-reduced-motion: reduce)'?{matches:true}:original(query);
+  }}),d=w.document;
+  try{d.querySelector('[data-action="search"]').click();d.querySelector('[data-pick="330100"]').click();assert.equal(scrolls.length,1);assert.equal(scrolls[0].behavior,'instant');assert.equal(d.querySelector('.sheet'),null);assert.equal(d.body.style.position,'');}finally{await w.happyDOM.abort();f.db.close();}
 });
