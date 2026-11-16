@@ -1,4 +1,5 @@
 import { escapeHtml } from './store.js';
+import { PROFILES, PROFILE_PATTERNS } from './profiles.js';
 
 const FONT = "'PingFang SC','Microsoft YaHei','Noto Sans CJK SC',sans-serif";
 const COLORS = { ink: '#252a24', paper: '#f6f5ed', unlit: '#f8f7ef', green: '#c5f567', selected: '#ff976f' };
@@ -12,15 +13,18 @@ export function standaloneMap(svg, { width, height }) {
   copy.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
   copy.setAttribute('overflow', 'hidden');
   copy.querySelectorAll('title').forEach(el => el.remove());
+  copy.querySelectorAll('defs').forEach(el => el.remove());
   copy.querySelectorAll('.city-shape').forEach(el => {
     const selected = el.classList.contains('is-selected');
     const lit = el.classList.contains('is-lit');
-    attributes(el, { fill: selected ? COLORS.selected : lit ? COLORS.green : COLORS.unlit,
-      stroke: selected ? COLORS.ink : lit ? '#6b7b51' : '#929986',
-      'stroke-width': selected ? 1.4 : .5, 'vector-effect': 'non-scaling-stroke' });
+    attributes(el, { fill: selected ? COLORS.selected : el.dataset.paintFill || (lit ? COLORS.green : COLORS.unlit),
+      stroke: selected ? COLORS.ink : el.dataset.paintStroke || (lit ? '#6b7b51' : '#929986'),
+      'stroke-width': selected ? 1 : .3, 'vector-effect': 'non-scaling-stroke',
+      'stroke-linejoin': 'round', 'stroke-linecap': 'round' });
+    el.style.removeProperty('fill');el.style.removeProperty('stroke');el.style.removeProperty('stroke-width');
   });
   copy.querySelectorAll('.province-shape').forEach(el => attributes(el, {
-    fill: 'none', stroke: '#3b4436', 'stroke-width': 1.15,
+    fill: 'none', stroke: '#3b4436', 'stroke-width': .8,
     'vector-effect': 'non-scaling-stroke', 'stroke-linejoin': 'round'
   }));
   copy.querySelectorAll('.map-decoration').forEach(el => attributes(el, {
@@ -55,12 +59,25 @@ function attributes(element, values) {
   for (const [name, value] of Object.entries(values)) element.setAttribute(name, String(value));
 }
 
-export function createMapSnapshot(container, summary, { date = new Date(), demo = false, offline = false } = {}) {
+export function exportDimensions(width, height, longEdge = 4096) {
+  const maxPixels = 12000000;
+  const scale = Math.min(longEdge / Math.max(width, height), Math.sqrt(maxPixels / (width * height)));
+  let pixelWidth = Math.max(1, Math.round(width * scale));
+  let pixelHeight = Math.max(1, Math.round(height * scale));
+  if (pixelWidth * pixelHeight > maxPixels) {
+    if (pixelWidth >= pixelHeight) pixelHeight = Math.floor(maxPixels / pixelWidth);
+    else pixelWidth = Math.floor(maxPixels / pixelHeight);
+  }
+  return { pixelWidth, pixelHeight };
+}
+
+export function createMapSnapshot(container, summary, { date = new Date(), demo = false, offline = false, view = 'together' } = {}) {
   const stage = container.querySelector('.map-stage');
   const rect = stage.getBoundingClientRect();
   const width = Math.round(rect.width || 700);
   const stageHeight = Math.round(rect.height || 490);
   const height = stageHeight + 150;
+  const { pixelWidth, pixelHeight } = exportDimensions(width, height);
   const mapRect = container.querySelector('.map-svg').getBoundingClientRect();
   const mapHeight = Math.round(mapRect.height || stageHeight - 100);
   const mapWidth = Math.round(mapRect.width || width);
@@ -76,15 +93,18 @@ export function createMapSnapshot(container, summary, { date = new Date(), demo 
   const day = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
   const stamp = `${demo ? '示例 · ' : ''}${offline ? '离线缓存 · ' : ''}${day}`;
   const legendY = stageHeight + 103;
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" font-family="${escapeHtml(FONT)}">
-    <defs><pattern id="export-dots" width="16" height="16" patternUnits="userSpaceOnUse"><circle cx="1" cy="1" r=".8" fill="#c5c7bb"/></pattern></defs>
+  const viewName=view==='all'?'完整视图':PROFILES[view].label;
+  const legend=[{label:'一起',fill:PROFILES.together.color},{label:'轩宝',fill:PROFILES.xuan.color},{label:'曦宝',fill:PROFILES.xi.color},{label:'分别去过',fill:'url(#personal-both)'},{label:'未去过',fill:COLORS.unlit},{label:'选中',fill:COLORS.selected}];
+  // Give the SVG its final pixel dimensions before image decoding. Drawing a
+  // phone-sized SVG image onto a larger canvas can otherwise blur in some engines.
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${pixelWidth}" height="${pixelHeight}" viewBox="0 0 ${width} ${height}" font-family="${escapeHtml(FONT)}" shape-rendering="geometricPrecision" text-rendering="geometricPrecision">
+    <defs>${PROFILE_PATTERNS}</defs>
     <rect width="${width}" height="${height}" fill="${COLORS.paper}"/>
     <rect x="0" y="0" width="${width}" height="84" fill="#fffef8"/>
-    <text x="16" y="29" font-size="19" font-weight="800" fill="${COLORS.ink}">城市点亮地图</text>
+    <text x="16" y="29" font-size="19" font-weight="800" fill="${COLORS.ink}">${viewName}</text>
     <text x="16" y="49" font-size="10" fill="#666d60">${escapeHtml(stamp)}</text>
-    <text x="16" y="70" font-size="11" fill="${COLORS.ink}">全图已点亮 ${summary.count} / ${summary.total} 个地区 · ${summary.provinces} 个省级区域</text>
-    <rect y="84" width="${width}" height="${stageHeight}" fill="#eeede5"/>
-    <rect y="84" width="${width}" height="${stageHeight}" fill="url(#export-dots)"/>
+    <text x="16" y="70" font-size="11" fill="${COLORS.ink}">${view==='all'?'全部':'当前分类'} ${summary.count} / ${summary.total} 个地区 · ${summary.provinces} 个省级区域</text>
+    <rect y="84" width="${width}" height="${stageHeight}" fill="${COLORS.paper}"/>
     ${map.outerHTML}
     <text x="${width - 24}" y="103" font-size="9" text-anchor="middle" fill="${COLORS.ink}">N</text>
     <path d="M${width - 24} 110 l-5 17 10-2 Z" fill="${COLORS.ink}"/>
@@ -93,19 +113,20 @@ export function createMapSnapshot(container, summary, { date = new Date(), demo 
     <path d="M${insetX} ${insetY + insetHeight - 16}h${insetWidth}" stroke="${COLORS.ink}"/>
     <text x="${insetX + insetWidth / 2}" y="${insetY + insetHeight - 5}" text-anchor="middle" font-size="8" fill="${COLORS.ink}">南海诸岛</text>
     <path d="M0 84H${width}M0 ${stageHeight + 84}H${width}" stroke="${COLORS.ink}" stroke-width="1.5"/>
-    ${[[16,COLORS.green,'已点亮'],[99,COLORS.unlit,'未点亮'],[182,COLORS.selected,'选中']].map(([x,fill,label]) => `<rect x="${x}" y="${legendY - 8}" width="10" height="10" fill="${fill}" stroke="${COLORS.ink}"/><text x="${x + 16}" y="${legendY + 1}" font-size="10" fill="${COLORS.ink}">${label}</text>`).join('')}
-    <path d="M16 ${legendY + 18}h20" stroke="#3b4436" stroke-width="1.6"/><text x="42" y="${legendY + 21}" font-size="9" fill="#626b5a">省界</text>
-    <path d="M87 ${legendY + 18}h20" stroke="#929986" stroke-width=".7"/><text x="113" y="${legendY + 21}" font-size="9" fill="#626b5a">市界</text>
+    ${legend.map(({fill,label},index)=>{const col=index%3,row=Math.floor(index/3),x=16+col*((width-32)/3),y=legendY+row*20;return `<rect x="${x}" y="${y-8}" width="10" height="10" fill="${fill}" stroke="${COLORS.ink}" stroke-width=".7"/><text x="${x+16}" y="${y+1}" font-size="9" fill="${COLORS.ink}">${label}</text>`;}).join('')}
     <text x="16" y="${height - 9}" font-size="8" fill="#757d6d">边界数据：DataV.GeoAtlas</text>
   </svg>`;
-  const scale = Math.min(3, 3840 / Math.max(width, height));
-  return { svg, width, height, pixelWidth: Math.round(width * scale), pixelHeight: Math.round(height * scale),
-    filename: `城市点亮地图-${demo ? '示例-' : ''}${day}.png` };
+  const name = `城市点亮地图-${view==='all'?'完整':PROFILES[view].short}-${demo ? '示例-' : ''}${day}`;
+  return { svg, width, height, pixelWidth, pixelHeight, filename: `${name}.png`, svgFilename: `${name}.svg` };
+}
+
+export function createMapSvgBlob(snapshot) {
+  return new Blob(['<?xml version="1.0" encoding="UTF-8"?>\n', snapshot.svg], { type: 'image/svg+xml;charset=utf-8' });
 }
 
 export async function renderMapPng(snapshot, { signal } = {}) {
   if (signal?.aborted) throw new DOMException('已取消', 'AbortError');
-  const url = URL.createObjectURL(new Blob([snapshot.svg], { type: 'image/svg+xml;charset=utf-8' }));
+  const url = URL.createObjectURL(createMapSvgBlob(snapshot));
   const canvas = document.createElement('canvas');
   const img = new Image();
   try {
@@ -124,11 +145,14 @@ export async function renderMapPng(snapshot, { signal } = {}) {
     canvas.height = snapshot.pixelHeight;
     const context = canvas.getContext('2d');
     if (!context) throw new Error('当前浏览器不支持图片导出，请更换浏览器');
+    context.imageSmoothingEnabled = true;
+    context.imageSmoothingQuality = 'high';
     context.drawImage(img, 0, 0, canvas.width, canvas.height);
     const blob = await new Promise((resolve, reject) => canvas.toBlob(value => value ? resolve(value) : reject(new Error('PNG 生成失败，请重试')), 'image/png'));
     if (signal?.aborted) throw new DOMException('已取消', 'AbortError');
     return blob;
   } finally {
+    img.src = '';
     URL.revokeObjectURL(url);
     canvas.width = canvas.height = 1;
   }

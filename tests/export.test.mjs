@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { Resvg } from '@resvg/resvg-js';
-import { createMapSnapshot } from '../src/export.js';
+import { createMapSnapshot, createMapSvgBlob, exportDimensions } from '../src/export.js';
 import { fixture } from './helpers.mjs';
 import { openApp, until } from './ui-harness.mjs';
 
@@ -18,12 +18,19 @@ test('current-view export keeps zoom, selections, borders and inset, and rasteri
     measureMap(d);d.querySelector('[data-action="demo"]').click();
     const card=d.querySelector('.map-card');
     const nationwide=createMapSnapshot(card,meta,{demo:true,date:new Date('2026-11-16T12:00:00Z')});
-    assert.equal(nationwide.pixelWidth,1170);assert.equal(nationwide.pixelHeight,1818);assert.match(nationwide.svg,/示例/);
+    assert.equal(nationwide.pixelWidth,2636);assert.equal(nationwide.pixelHeight,4096);assert.match(nationwide.svg,/示例/);
+    assert.match(nationwide.svg,/<svg[^>]+width="2636" height="4096" viewBox="0 0 390 606"/);
+    assert.ok(!nationwide.svg.includes('export-dots'));
     assert.ok(!/<foreignObject|<image|https?:\/\/(?!www.w3.org)/.test(nationwide.svg));
     assert.match(nationwide.svg,/fill="#c5f567"/);assert.match(nationwide.svg,/南海诸岛/);
     const png=new Resvg(nationwide.svg,{fitTo:{mode:'width',value:nationwide.pixelWidth}}).render().asPng();
-    assert.equal(png.subarray(1,4).toString(),'PNG');assert.equal(png.readUInt32BE(16),1170);assert.equal(png.readUInt32BE(20),1818);assert.ok(png.length>30000);
+    assert.equal(png.subarray(1,4).toString(),'PNG');assert.equal(png.readUInt32BE(16),2636);assert.equal(png.readUInt32BE(20),4096);assert.ok(png.length>30000);
+    const vector=await createMapSvgBlob(nationwide).text();
+    assert.match(vector,/^<\?xml version="1.0" encoding="UTF-8"\?>/);
+    assert.match(vector,/<path /);assert.ok(!/<image|<foreignObject|<script|data:image/i.test(vector));
+    assert.equal((vector.match(/data-city=/g)||[]).length,card.querySelectorAll('[data-city]').length);
     await mkdir('artifacts',{recursive:true});await writeFile('artifacts/export-mobile.png',png);
+    await writeFile('artifacts/export-vector.svg',vector);
     d.querySelector('[data-action="search"]').click();d.querySelector('[data-pick="330100"]').click();
     const transform=d.querySelector('.map-svg>g').getAttribute('transform');
     const zoomed=createMapSnapshot(card,meta,{demo:true});
@@ -34,14 +41,14 @@ test('current-view export keeps zoom, selections, borders and inset, and rasteri
 });
 test('large viewport exports stay within the mobile-safe size limit; cached maps are identified',async()=>{
   const f=fixture(),w=await openApp(f),d=w.document;
-  try{measureMap(d,2400,1600);const s=createMapSnapshot(d.querySelector('.map-card'),{count:0,provinces:0,total:370},{offline:true});assert.ok(Math.max(s.pixelWidth,s.pixelHeight)<=3840);assert.match(s.svg,/离线缓存/);assert.ok(!s.svg.includes('undefined'));}finally{await w.happyDOM.abort();f.db.close();}
+  try{measureMap(d,2400,1600);const s=createMapSnapshot(d.querySelector('.map-card'),{count:0,provinces:0,total:370},{offline:true});assert.ok(Math.max(s.pixelWidth,s.pixelHeight)<=4096);assert.ok(s.pixelWidth*s.pixelHeight<=12000000);assert.match(s.svg,/离线缓存/);assert.ok(!s.svg.includes('undefined'));}finally{await w.happyDOM.abort();f.db.close();}
 });
 test('export dialog supplies a PNG download even when system file sharing is unsupported',async()=>{
   const f=fixture();const blobs=new Map(),downloads=[];
   const w=await openApp(f,{configure(w){
     w.URL.createObjectURL=blob=>{const url=`blob:https://example.test/${crypto.randomUUID()}`;blobs.set(url,blob);return url;};
     w.URL.revokeObjectURL=url=>blobs.delete(url);
-    w.Image=class{set src(url){blobs.get(url).text().then(text=>{this.svg=text;this.onload?.();});}};
+    w.Image=class{set src(url){if(url)blobs.get(url).text().then(text=>{this.svg=text;this.onload?.();});}};
     w.HTMLCanvasElement.prototype.getContext=function(){return{drawImage:image=>{this.sourceSvg=image.svg;}};};
     w.HTMLCanvasElement.prototype.toBlob=function(callback){const bytes=new Resvg(this.sourceSvg,{fitTo:{mode:'width',value:this.width}}).render().asPng();callback(new w.Blob([bytes],{type:'image/png'}));};
     w.HTMLAnchorElement.prototype.click=function(){downloads.push({url:this.href,name:this.download});};
@@ -49,11 +56,41 @@ test('export dialog supplies a PNG download even when system file sharing is uns
   }}),d=w.document;
   try{
     measureMap(d);d.querySelector('[data-action="export-map"]').click();
-    await until(()=>d.querySelector('[data-save-png]'));
+    assert.ok(d.querySelector('[data-save-svg]'));assert.equal(d.querySelector('[data-save-svg]').disabled,false);
+    d.querySelector('[data-save-svg]').click();assert.equal(downloads.length,1);assert.match(downloads[0].name,/\.svg$/);
+    const vector=blobs.get(downloads[0].url);assert.match(vector.type,/image\/svg\+xml/);assert.ok(!(await vector.text()).includes('data:image/png'));
+    await until(()=>d.querySelector('[data-save-png]')?.disabled===false);
     const preview=d.querySelector('.export-preview img');assert.ok(preview);assert.equal(d.querySelector('[data-share-png]'),null);
     const blob=blobs.get(preview.src);assert.equal(blob.type,'image/png');assert.ok(blob.size>30000);
-    d.querySelector('[data-save-png]').click();assert.equal(downloads.length,1);assert.match(downloads[0].name,/\.png$/);assert.equal(downloads[0].url,preview.src);
+    d.querySelector('[data-save-png]').click();assert.equal(downloads.length,2);assert.match(downloads[1].name,/\.png$/);assert.equal(downloads[1].url,preview.src);
     assert.deepEqual((await(await f.request('/api/state')).json()).records,{});
     d.querySelector('[data-close]').click();assert.equal(d.querySelector('.sheet'),null);
+  }finally{await w.happyDOM.abort();f.db.close();}
+});
+test('high-resolution output is independent of phone size and respects the pixel budget',()=>{
+  for(const [width,height] of [[320,540],[390,606],[700,640],[900,900],[3000,2200]]){
+    const result=exportDimensions(width,height);
+    assert.ok(result.pixelWidth*result.pixelHeight<=12000000);
+    assert.ok(Math.max(result.pixelWidth,result.pixelHeight)<=4096);
+    assert.ok(Math.max(result.pixelWidth,result.pixelHeight)>=3464);
+    assert.ok(Math.abs(result.pixelWidth/result.pixelHeight-width/height)<.001);
+  }
+});
+test('SVG remains downloadable if the device cannot create the high-resolution PNG',async()=>{
+  const f=fixture(),blobs=new Map(),downloads=[];
+  const w=await openApp(f,{configure(w){
+    w.URL.createObjectURL=blob=>{const url=`blob:https://example.test/${crypto.randomUUID()}`;blobs.set(url,blob);return url;};
+    w.URL.revokeObjectURL=url=>blobs.delete(url);
+    w.Image=class{set src(url){if(url)Promise.resolve().then(()=>this.onload?.());}};
+    w.HTMLCanvasElement.prototype.getContext=()=>null;
+    w.HTMLAnchorElement.prototype.click=function(){downloads.push({name:this.download,url:this.href});};
+  }}),d=w.document;
+  try{
+    measureMap(d);d.querySelector('[data-action="export-map"]').click();
+    await until(()=>d.querySelector('[data-export-error]')?.hidden===false);
+    assert.equal(d.querySelector('[data-save-png]').disabled,true);
+    d.querySelector('[data-save-svg]').click();assert.equal(downloads.length,1);
+    assert.match(downloads[0].name,/\.svg$/);assert.match((await blobs.get(downloads[0].url).text()),/<path /);
+    assert.equal(d.querySelector('[data-retry-export]').hidden,false);
   }finally{await w.happyDOM.abort();f.db.close();}
 });

@@ -14,5 +14,6 @@ async function authorizedRequest(path,method,input) {
     catch (error) { if (error.status === 401 && attempt === 0) session = null; else throw error; }
   }
 }
-export function saveCity(id,input){return authorizedRequest(`/api/cities/${id}`,'PUT',input);}
-export function saveCities(updates){return authorizedRequest('/api/cities/batch','POST',{updates});}
+const profilePath=profile=>profile==='together'?'/api':`/api/profiles/${profile}`;
+export function saveCity(id,input,profile='together'){return authorizedRequest(`${profilePath(profile)}/cities/${id}`,'PUT',input);}
+export function saveCities(updates,profile='together'){return authorizedRequest(`${profilePath(profile)}/cities/batch`,'POST',{updates});}

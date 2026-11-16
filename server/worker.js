@@ -5,28 +5,34 @@ export function createWorker(validCityIds) {
   return {
     async fetch(request, env) {
       const url = new URL(request.url), origin = request.headers.get('Origin');
+      const scoped=url.pathname.match(/^\/api\/profiles\/(together|xuan|xi)(\/cities(?:\/.*)?)$/);
+      const profile=scoped?.[1] || 'together';
+      const pathname=scoped?`/api${scoped[2]}`:url.pathname;
       const allowed = ALLOWED_ORIGINS.has(origin) || origin === url.origin;
       const headers = { 'Content-Type':'application/json; charset=utf-8', 'Cache-Control':'no-store', 'X-Content-Type-Options':'nosniff', 'Vary':'Origin', ...(allowed ? {'Access-Control-Allow-Origin':origin,'Access-Control-Allow-Methods':'GET, POST, PUT, OPTIONS','Access-Control-Allow-Headers':'Content-Type, Authorization','Access-Control-Max-Age':'86400'} : {}) };
       const json = (body, status = 200) => new Response(JSON.stringify(body),{status,headers});
       if(request.method==='OPTIONS')return new Response(null,{status:allowed?204:403,headers});
-      if(url.pathname==='/health')return json({ok:true,app:'点亮共享地图'});
+      if(pathname==='/health')return json({ok:true,app:'点亮共享地图'});
       try {
         if(!env.DB)return json({error:'共享数据服务尚未就绪'},503);
-        if(url.pathname==='/api/state' && request.method==='GET') {
+        if(pathname==='/api/state' && request.method==='GET') {
           const [visits,history] = await env.DB.batch([
             env.DB.prepare('SELECT * FROM visits'),
-            env.DB.prepare('SELECT * FROM activity ORDER BY updated_at DESC, rowid DESC LIMIT 50')
+            env.DB.prepare('SELECT * FROM activity ORDER BY updated_at DESC, rowid DESC LIMIT 150')
           ]);
-          return json({ records:Object.fromEntries(visits.results.map(row=>[row.city_id,toRecord(row)])),activity:history.results.map(row=>({cityId:row.city_id,operationId:row.operation_id,...toRecord(row)})),serverTime:new Date().toISOString() });
+          const layers={together:{},xuan:{},xi:{}};
+          for(const row of visits.results){const [layer,id]=splitCity(row.city_id);if(layers[layer]&&validCities.has(id))layers[layer][id]=toRecord(row);}
+          const activityAll=history.results.map(row=>{const [layer,id]=splitCity(row.city_id);return {profile:layer,cityId:id,operationId:row.operation_id,...toRecord(row)};});
+          return json({ records:layers.together,layers,activity:activityAll.filter(row=>row.profile==='together').slice(0,50),activityAll,serverTime:new Date().toISOString() });
         }
         if(!allowed)return json({error:'请从点亮地图页面发起操作'},403);
         if(!env.SESSION_SECRET)return json({error:'共享服务尚未完成配置'},503);
-        if(url.pathname==='/api/session' && request.method==='POST') {
+        if(pathname==='/api/session' && request.method==='POST') {
           if(!await limit(env,request,'session',20))return json({error:'操作频繁，请一分钟后再试'},429);
           const payload=btoa(JSON.stringify({id:crypto.randomUUID(),expires:Date.now()+3600000}));
           return json({token:`${payload}.${await signature(payload,env.SESSION_SECRET)}`});
         }
-        if(url.pathname==='/api/cities/batch' && request.method==='POST') {
+        if(pathname==='/api/cities/batch' && request.method==='POST') {
           if(!await authenticated(request,env))return json({error:'会话已过期，请重试'},401);
           if(Number(request.headers.get('Content-Length') || 0)>524288)return json({error:'批量内容过长'},413);
           const raw=await request.text();if(raw.length>524288)return json({error:'批量内容过长'},413);
@@ -42,9 +48,10 @@ export function createWorker(validCityIds) {
             ids.add(update.id);operations.add(update.operationId);
           }
           if(!await limit(env,request,'write',60))return json({error:'操作频繁，请一分钟后再试'},429);
-          return await saveBatch(env.DB,updates,json);
+          const stored=updates.map(row=>({...row,id:storageCity(profile,row.id)}));
+          return await saveBatch(env.DB,stored,(body,status)=>json(decodeWrite(body,profile),status));
         }
-        const match=url.pathname.match(/^\/api\/cities\/(\d{6})$/);
+        const match=pathname.match(/^\/api\/cities\/(\d{6})$/);
         if(match && request.method==='PUT') {
           if(!await authenticated(request,env))return json({error:'会话已过期，请重试'},401);
           if(!validCities.has(match[1]))return json({error:'找不到这个城市'},400);
@@ -53,7 +60,7 @@ export function createWorker(validCityIds) {
           let input;try{input=JSON.parse(raw);}catch{return json({error:'记录格式有误'},400);}
           const error=validate(input);if(error)return json({error},400);
           if(!await limit(env,request,'write',60))return json({error:'操作频繁，请一分钟后再试'},429);
-          const cityId=match[1];
+          const cityId=storageCity(profile,match[1]);
           const existing=await env.DB.prepare('SELECT * FROM activity WHERE operation_id = ?').bind(input.operationId).first();
           if(existing){
             if(existing.city_id!==cityId)return json({error:'操作编号已被使用'},409);
@@ -88,6 +95,15 @@ export function createWorker(validCityIds) {
   };
 }
 function toRecord(row){return {active:!!row.active,version:row.version,date:row.date,note:row.note,author:row.author,updatedAt:row.updated_at};}
+function storageCity(profile,id){return profile==='together'?id:`${profile}:${id}`;}
+function splitCity(id){return id.includes(':')?id.split(':'):['together',id];}
+function decodeWrite(body,profile){
+  if(profile==='together')return body;
+  const result={...body};
+  for(const key of ['records','current'])if(body[key])result[key]=Object.fromEntries(Object.entries(body[key]).map(([id,row])=>[splitCity(id)[1],row]));
+  if(body.conflicts)result.conflicts=body.conflicts.map(id=>splitCity(id)[1]);
+  return result;
+}
 export function validate(input){
   if(!input || typeof input!=='object')return '记录格式有误';
   if(typeof input.active!=='boolean')return '点亮状态有误';

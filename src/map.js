@@ -2,12 +2,14 @@ import { select } from 'd3-selection';
 import { zoom, zoomIdentity } from 'd3-zoom';
 import { escapeHtml } from './store.js';
 import { frameUpdates, simplifyMapPath } from './motion.js';
+import { PROFILE_PATTERNS } from './profiles.js';
 
 const NS = 'http://www.w3.org/2000/svg';
 const shortProvince = name => name.replace(/壮族自治区|回族自治区|维吾尔自治区|自治区|特别行政区|省|市/g, '');
 export function createMap(container, data, onSelect) {
   const svg = container.querySelector('.map-svg');
   svg.setAttribute('viewBox', '110 25 720 610');
+  const defs=document.createElementNS(NS,'defs');defs.innerHTML=PROFILE_PATTERNS;svg.append(defs);
   const group = document.createElementNS(NS, 'g');
   svg.append(group);
   group.innerHTML = `<g class="cities">${data.cities.map(c => `<path class="city-shape" data-city="${c.id}" d="${c.path}" aria-label="${escapeHtml(c.name)}"><title>${escapeHtml(c.name)}</title></path>`).join('')}</g><g>${data.provinces.map(p => `<path class="province-shape" d="${p.path}"/>`).join('')}</g><g>${data.decorations.map(d => `<path class="map-decoration" d="${d}"/>`).join('')}</g><g class="province-labels">${data.provinces.filter(p => !['810000','820000'].includes(p.id)).map(p => `<text class="province-label" x="${p.center[0]}" y="${p.id === '460000' ? 599 : p.center[1]}">${shortProvince(p.name)}</text>`).join('')}</g><g class="city-labels"></g>`;
@@ -21,6 +23,7 @@ export function createMap(container, data, onSelect) {
   });
   const motionPaths = [...group.querySelectorAll('.city-shape,.province-shape')].map(node => ({node,full:node.getAttribute('d'),coarse:null,fine:null}));
   let selected = new Set(), lit = new Set(), transform = zoomIdentity;
+  const paintKeys=new Map();
   let labelKey = '', labelsDirty = true, activeGesture = false, moving = false, motionTier = 'full', screenScale = 1;
   let suppressClickUntil = 0, gestureMoved = false, pointerStart = null;
   const pointers = new Map();
@@ -144,15 +147,23 @@ export function createMap(container, data, onSelect) {
   container.querySelector('[data-map="reset"]').onclick = reset;
   drawLabels();
   return {
-    update(records,ids) {
+    update(records,ids,appearances={}) {
       const next = new Set(ids || []);
       const nextLit = new Set(data.cities.filter(c=>records[c.id]?.active).map(c=>c.id));
       const changed = new Set();
       for (const id of new Set([...selected,...next])) if (selected.has(id) !== next.has(id)) changed.add(id);
       for (const id of new Set([...lit,...nextLit])) if (lit.has(id) !== nextLit.has(id)) changed.add(id);
+      for(const city of data.cities){
+        const paint=appearances[city.id] || {active:nextLit.has(city.id),fill:nextLit.has(city.id)?'#c5f567':'#f8f7ef',stroke:nextLit.has(city.id)?'#6b7b51':'#929986'};
+        const key=`${paint.fill}|${paint.stroke}|${paint.category||''}`;
+        if(paintKeys.get(city.id)!==key){changed.add(city.id);paintKeys.set(city.id,key);}
+      }
       selected = next; lit = nextLit;
       for (const id of changed) for (const node of nodesByCity.get(id) || []) {
-        node.classList.toggle('is-lit',lit.has(id)); node.classList.toggle('is-selected',selected.has(id));
+        const paint=appearances[id] || {active:lit.has(id),fill:lit.has(id)?'#c5f567':'#f8f7ef',stroke:lit.has(id)?'#6b7b51':'#929986'};
+        node.classList.toggle('is-lit',paint.active); node.classList.toggle('is-selected',selected.has(id));
+        node.dataset.paintFill=paint.fill;node.dataset.paintStroke=paint.stroke;node.dataset.profileCategory=paint.category||'';
+        node.style.fill=selected.has(id)?'#ff976f':paint.fill;node.style.stroke=selected.has(id)?'#252a24':paint.stroke;
       }
       if (changed.size) labelsDirty = true;
       if (!moving) drawLabels();
