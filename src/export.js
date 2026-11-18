@@ -23,7 +23,7 @@ export function createMapSnapshot(map, { date = new Date(), demo = false, offlin
   const stamp = [demo && '示例', offline && '离线缓存', map.coarse && '概览边界', day].filter(Boolean).join(' · ');
   const viewName = view === 'all' ? '完整视图' : PROFILES[view].label;
   // Metadata travels with the file. Every visible pixel belongs to the map.
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="${pixelWidth}" height="${pixelHeight}" viewBox="0 0 ${width} ${height}" data-projection="mercator" data-central-meridian="${CENTRAL_MERIDIAN}" data-view="${view}" font-family="${escapeHtml(FONT)}" shape-rendering="geometricPrecision" text-rendering="geometricPrecision">
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="${pixelWidth}" height="${pixelHeight}" viewBox="0 0 ${width} ${height}" preserveAspectRatio="xMidYMid slice" data-projection="mercator" data-central-meridian="${CENTRAL_MERIDIAN}" data-view="${view}" font-family="${escapeHtml(FONT)}" shape-rendering="geometricPrecision" text-rendering="geometricPrecision">
     <title>${viewName} · 世界足迹地图</title><desc>${stamp}。墨卡托投影，中央经线 ${CENTRAL_MERIDIAN}°E，${NORTH}°N 至 ${Math.abs(SOUTH)}°S。边界来自 DataV.GeoAtlas / Natural Earth。</desc>
     <defs>${PROFILE_PATTERNS}</defs>${body}
   </svg>`;

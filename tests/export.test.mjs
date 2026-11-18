@@ -39,7 +39,10 @@ test('full-bleed world exports preserve all four view palettes and both hemisphe
     assert.equal(fill(overview,'360100'),'#e6eaf3');
     assert.equal(fill(overview,'370200'),'url(#personal-both-muted)');
     assert.ok(!/<image|<foreignObject|<script|data:image/i.test(overview));
-    const image=new Resvg(overview,{fitTo:{mode:'width',value:780}}).render().asPng();
+    const rendered=new Resvg(overview,{fitTo:{mode:'width',value:780}}).render();
+    const rgba=rendered.pixels;
+    for(const i of [0,rendered.width-1,rendered.width*(rendered.height-1),rendered.width*rendered.height-1])assert.equal(rgba[i*4+3],255);
+    const image=rendered.asPng();
     await mkdir('artifacts',{recursive:true});await writeFile('artifacts/world-mercator-preview.png',image);
     searchAndSelect(w,'820000');
     const local=await exported();

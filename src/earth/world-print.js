@@ -109,7 +109,7 @@ export async function prepareWorldMap(data, paints, selected) {
   const footprints = marks.map(({item, category, ink}) =>
     `<path data-city="${esc(item.id)}" data-profile-category="${category}" fill="${ink}" d="${regions.get(item.id) || ''}"/>`).join('');
   const body = `<defs><g id="print-land">${landPaths(base.land)}</g></defs>
-    <rect width="${MAP_WIDTH}" height="${MAP_HEIGHT}" fill="#d4e4d9"/>${grid()}
+    <rect x="-1" y="-1" width="${MAP_WIDTH+2}" height="${MAP_HEIGHT+2}" fill="#d4e4d9"/>${grid()}
     <g fill="#f8f7ef">${ground}${landPaths(base.cut)}</g>${footprints}
     <g data-boundary="country" fill="none" stroke="#566453" stroke-width=".6" stroke-linejoin="round">${ground}<path d="${base.borders}"/></g>
     ${annotations(data, marks)}`;
