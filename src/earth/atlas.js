@@ -29,22 +29,38 @@ async function readAsset(url, type = 'arrayBuffer'){
 export async function loadEarth() {
   const root=dataRoot();
   const data=catalog(await readAsset(new URL('atlas.json',root), 'json'));
-  let worker, sequence=0;
+  let worker, sequence=0, suppliedIds=false, closed=false;
   const jobs=new Map();
   try {
     if(typeof Worker==='function'){
       worker=new Worker(new URL('./mesh-worker.js',import.meta.url),{type:'module'});
-      worker.onmessage=({data:r})=>{const j=jobs.get(r.id);if(!j)return;jobs.delete(r.id);r.error?j.reject(new Error(r.error)):j.resolve(r.tiles);};
-      worker.onerror=()=>{worker.terminate();worker=null;for(const j of jobs.values())j.reject(new Error('边界线程不可用'));jobs.clear();};
+      worker.onmessage=({data:r})=>{const j=jobs.get(r.id);if(!j)return;jobs.delete(r.id);r.error?j.reject(new Error(r.error)):j.resolve(r.surface??r.tiles);};
+      worker.onerror=worker.onmessageerror=()=>{worker?.terminate();worker=null;data.projectFrame=null;for(const j of jobs.values())j.reject(new Error('边界线程不可用'));jobs.clear();};
     }
   } catch { worker=null; }
+  data.dispose=()=>{
+    closed=true;worker?.terminate();worker=null;data.projectFrame=null;
+    for(const job of jobs.values())job.reject(new Error('Map closed'));
+    jobs.clear();
+  };
+  function ask(message,transfer=[]) {
+    return new Promise((resolve,reject)=>{
+      const id=++sequence;jobs.set(id,{resolve,reject});
+      try{worker.postMessage({...message,id},transfer);}
+      catch(error){jobs.delete(id);reject(error);}
+    });
+  }
+  if(worker)data.projectFrame=(f,tiles,paints,selected,moving,pad)=>{
+    const ids=suppliedIds?undefined:data.features.map(item=>item.id);
+    suppliedIds=true;
+    return ask({type:'project',frame:f,keys:tiles.map(t=>[t.key,!!t.fallback]),ids,
+      paints:[...paints],selected:[...selected],moving,pad});
+  };
   async function load(file){
     const buffer=await readAsset(new URL(file,root));
     if(worker){
-      try{return await new Promise((resolve,reject)=>{
-        const id=++sequence;jobs.set(id,{resolve,reject});
-        worker.postMessage({id,buffer,layout:data.layout,overview:file===data.raw.base},[buffer]);
-      });}catch{if(!buffer.byteLength)return decodePacket(await readAsset(new URL(file,root)),data.layout);}
+      try{return await ask({buffer,layout:data.layout,overview:file===data.raw.base},[buffer]);}
+      catch(error){if(closed)throw error;if(!buffer.byteLength)return decodePacket(await readAsset(new URL(file,root)),data.layout);}
     }
     return decodePacket(buffer,data.layout);
   }
@@ -76,7 +92,7 @@ export async function loadEarth() {
     const old=[...stored.values()].filter(t=>!wanted.has(t.key)&&!pinned.has(t.key)).sort((a,b)=>a.seen-b.seen);
     for(const t of old){
       if(stored.size<=16 && bytes<=48*1024*1024)break;
-      stored.delete(t.key);bytes-=t.bytes;data.onEvict(t);
+      stored.delete(t.key);bytes-=t.bytes;worker?.postMessage({type:'evict',key:t.key});data.onEvict(t);
     }
   }
   function start(job) {
@@ -98,7 +114,7 @@ export async function loadEarth() {
     for(const [key,job] of jobsByKey){
       if(!job.started && !wanted.has(key) && !pinned.has(key)){jobsByKey.delete(key);job.resolve(false);}
     }
-    if(active>=3)return;
+    if(closed || active>=3)return;
     const waiting=[...jobsByKey.values()].filter(job=>!job.started).sort((a,b)=>a.distance-b.distance);
     for(const job of waiting){if(active>=3)break;start(job);}
   }

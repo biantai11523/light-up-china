@@ -65,7 +65,7 @@ def main():
         tmp = Path(folder)
         install_host(tmp, phone)
         shutil.copy(HERE / "scenarios.js", tmp / "qa.js")
-        sequence = [("baseline", 1), ("candidate", 1), ("candidate", 2), ("baseline", 2)]
+        sequence = [("baseline", 1), ("candidate", 1), ("candidate", 2), ("baseline", 2), ("candidate", 3)]
         done = threading.Event()
         reports = {}
         for case, src in zip(["baseline","candidate"], sys.argv[1:], strict=True):
@@ -79,6 +79,10 @@ def main():
 
             def do_POST(self):
                 route = urlsplit(self.path).path.strip("/").split("/")
+                if len(route)==4 and route[:3]==["capture","candidate","1"] and route[3] in ("country","macau"):
+                    call("xcrun","simctl","io",phone,"screenshot",str(OUT/f"map-{route[3]}.png"))
+                    self.send_response(204);self.end_headers()
+                    return
                 if len(route) != 3 or route[0] != "result" or not route[2].isdigit():
                     self.send_error(404)
                     return
@@ -93,6 +97,8 @@ def main():
                     call("xcrun", "simctl", "io", phone, "screenshot", str(OUT / f"{case}-{run}.png"))
                     i = sequence.index((case, run)) + 1
                     next_url = f"/{sequence[i][0]}/?pass={sequence[i][1]}" if i < len(sequence) and "error" not in result else None
+                    if next_url and sequence[i]==("candidate",3):
+                        next_url += "&renderer=svg"
                     payload = json.dumps({"next": next_url}).encode()
                     self.send_response(200)
                     self.send_header("Content-Type","application/json")
@@ -118,6 +124,8 @@ def main():
             errors = [r["error"] for r in reports.values() if "error" in r]
             if errors or len(reports) != len(sequence):
                 raise RuntimeError(errors or "Incomplete trace sequence")
+            if not any(reports[f"candidate-{i}"]["renderer"]=="webgl" for i in (1,2)):
+                raise RuntimeError("Neither accelerated candidate run acquired a WebGL context")
         finally:
             server.shutdown()
             (OUT / "frames.json").write_text(json.dumps(dict(device="iPhone 17 Pro Simulator", runtime=runtime,

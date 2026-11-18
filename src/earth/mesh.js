@@ -6,11 +6,12 @@ import { cellKey, indicesFor, packRuns } from './draw-ranges.js';
 
 // ORB1 stores polygon rings, extra vertices for the curved surface, and offline
 // triangulation. The original rings are also the source for hit testing and SVG.
-export function decodePacket(compressed, layout) {
+export function decodePacket(compressed, layout, ringsOnly=false) {
   const {regions:regionCount, provinces:provinceCount} = layout;
   const bytes=gunzipSync(new Uint8Array(compressed));
   const a=new Int32Array(bytes.buffer,bytes.byteOffset,bytes.byteLength/4);
   if(a[0]!==0x3142524f) throw new Error('边界文件格式不正确');
+  const cellSize=a[1]===1 ? 100000 : 400000;
   let pos=2;
   const tiles=[];
   for(let t=0;t<a[1];t++){
@@ -22,15 +23,25 @@ export function decodePacket(compressed, layout) {
       const coords=a.subarray(pos,pos+=nv*2);
       const indices=a.subarray(pos,pos+=nt);
       let x=0,y=0,west=Infinity,south=Infinity,east=-Infinity,north=-Infinity;
-      for(let i=0;i<coords.length;i+=2){
+      const coordinateLength=ringsOnly?ends[nr-1]*2:coords.length;
+      for(let i=0;i<coordinateLength;i+=2){
         x+=coords[i];y+=coords[i+1];coords[i]=x;coords[i+1]=y;
         west=Math.min(west,x);east=Math.max(east,x);south=Math.min(south,y);north=Math.max(north,y);
       }
-      for(let i=1;i<nt;i++)indices[i]+=indices[i-1];
+      if(!ringsOnly)for(let i=1;i<nt;i++)indices[i]+=indices[i-1];
       const level=idx<regionCount?0:idx<regionCount+provinceCount?1:2;
       shapes.push({idx,ends,coords,indices,offset:vertices,level,boundary:layout.edges[idx],box:[west/1e5,south/1e5,east/1e5,north/1e5]});
       vertices+=nv;triangles+=nt;
       if(level===2)ground+=nt;
+    }
+    if(ringsOnly){
+      for(const shape of shapes){
+        shape.ends=shape.ends.slice();
+        shape.coords=shape.coords.slice(0,shape.ends[shape.ends.length-1]*2);
+        delete shape.indices;
+      }
+      tiles.push({key,shapes});
+      continue;
     }
     const points=new Float32Array(vertices*4), faces=new Uint32Array(triangles);
     const countryBuckets = new Map(), regionRuns = [];
@@ -52,7 +63,7 @@ export function decodePacket(compressed, layout) {
       if (s.level===COUNTRY) {
         for(let i=0;i<s.indices.length;i+=3){
           const a=s.indices[i], b=s.indices[i+1], c=s.indices[i+2], xy=s.coords;
-          const key=cellKey((xy[2*a]+xy[2*b]+xy[2*c])/3,(xy[2*a+1]+xy[2*b+1]+xy[2*c+1])/3);
+          const key=cellKey((xy[2*a]+xy[2*b]+xy[2*c])/3,(xy[2*a+1]+xy[2*b+1]+xy[2*c+1])/3,cellSize);
           indicesFor(countryBuckets,key).push(a+s.offset,b+s.offset,c+s.offset);
         }
       } else if(s.indices.length) {
@@ -76,7 +87,7 @@ export function decodePacket(compressed, layout) {
           const code=Math.min(ca,cb)*vertices+Math.max(ca,cb);
           if(seen.has(code))continue;
           seen.add(code);
-          const xy=s.coords, key=cellKey((xy[2*i]+xy[2*j])/2,(xy[2*i+1]+xy[2*j+1])/2);
+          const xy=s.coords, key=cellKey((xy[2*i]+xy[2*j])/2,(xy[2*i+1]+xy[2*j+1])/2,cellSize);
           indicesFor(lines[level],key).push(a,b);lineCounts[level]+=2;
         }
         first=end;

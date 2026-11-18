@@ -1,7 +1,13 @@
 // A packet can include an entire coastline even when a close-up shows only
 // a harbour. Group consecutive indices by geographic cell inside the worker.
-export function cellKey(x, y) {
-  return Math.floor((x + 18000000) / 400000) + 91 * Math.floor((y + 9000000) / 400000);
+const spread=Uint32Array.from({length:512},(_,n)=>{
+  let v=0;
+  for(let i=0;i<9;i++)v|=((n>>i)&1)<<(2*i);
+  return v;
+});
+export function cellKey(x, y, step) {
+  const lon=Math.floor((x+18000000)/step), lat=Math.floor((y+9000000)/step);
+  return spread[lon] | spread[lat]<<1;
 }
 
 export function indicesFor(buckets, key) {

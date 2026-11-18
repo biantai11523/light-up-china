@@ -6,6 +6,29 @@
   const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
   const sample = location.pathname.split('/')[1];
   const pass = new URLSearchParams(location.search).get('pass') || '1';
+  const fallback = new URLSearchParams(location.search).get('renderer')==='svg';
+  if(fallback){
+    const context=HTMLCanvasElement.prototype.getContext;
+    HTMLCanvasElement.prototype.getContext=function(kind,...rest){
+      return /webgl/.test(kind)?null:context.call(this,kind,...rest);
+    };
+  }
+  let projections=0, glyphBatches=0, lastVector;
+  const contextEvents=[];
+  for(const type of ['webglcontextcreationerror','webglcontextlost','webglcontextrestored']){
+    document.addEventListener(type,e=>contextEvents.push({type,message:e.statusMessage||''}),true);
+  }
+  const post=Worker.prototype.postMessage;
+  Worker.prototype.postMessage=function(message,...rest){
+    if(message?.type==='project')projections++;
+    if(message?.words)glyphBatches++;
+    return post.call(this,message,...rest);
+  };
+  const makeURL=URL.createObjectURL.bind(URL);
+  URL.createObjectURL=function(blob){
+    if(blob.type?.startsWith('image/svg+xml'))lastVector=blob;
+    return makeURL(blob);
+  };
   let work = null;
   window.requestAnimationFrame = callback => raf(time => {
     const start = performance.now();
@@ -52,6 +75,7 @@
     async function trace(name, move, duration = 1600) {
       const intervals = [], handler = [];
       const initialReads=rectReads;
+      const renderer=stage.dataset.renderer;
       work = [];
       let previous = await frame(), start = previous;
       let elapsed = 0;
@@ -62,7 +86,7 @@
         move(Math.min(1, elapsed / duration));
         handler.push(performance.now() - t);
       }
-      report.scenarios[name] = {frames: intervals.length, intervalP50: quantile(intervals,.5),
+      report.scenarios[name] = {renderer, endRenderer:stage.dataset.renderer, frames: intervals.length, intervalP50: quantile(intervals,.5),
         intervalP95: quantile(intervals,.95), over33ms: intervals.filter(v=>v>33.5).length,
         inputP95: quantile(handler,.95), appRafP95: quantile(work,.95), layoutReads:rectReads-initialReads};
       work = null;
@@ -73,8 +97,10 @@
     dispatch('pointerup',1,x+24,y);document.querySelector('[data-map="reset"]').click();
     await sleep(600);
     for(let i=0;i<18;i++)await frame();
+    report.renderer=stage.dataset.renderer;
     await trace('idle',()=>{},750);
     const before = stage.parentElement.querySelector('.earth-readout').textContent;
+    const capture = name => nativeFetch('/capture/'+sample+'/'+pass+'/'+name,{method:'POST',body:''});
     dispatch('pointerdown',1,x-70,y);
     await trace('rotate', t=>{
       for(let i=0;i<3;i++) dispatch('pointermove',1,x-70+t*140+i*.15,y+20*Math.sin(t*Math.PI));
@@ -92,20 +118,35 @@
     dispatch('pointerup',1,x-36,y+22);
     await sleep(650);
     if(!document.querySelector('#selection-dock').hidden)throw Error('Rotation or pinch selected a region');
+    if(sample==='candidate' && pass==='1'){
+      document.querySelector('[data-map="reset"]').click();await sleep(450);
+      for(let i=0;i<2;i++)document.querySelector('[data-map="plus"]').click();
+      await sleep(1100);
+      await capture('country');
+      document.querySelector('[data-action="export-map"]').click();
+      await waitFor(()=>document.querySelector('[data-save-svg]') && lastVector);
+      const national=new DOMParser().parseFromString(await lastVector.text(),'image/svg+xml');
+      if(national.querySelector('[data-boundary="prefecture"]') || !national.querySelector('[data-boundary="province"]'))
+        throw Error('Unexpected boundary hierarchy at national scale');
+      report.nationalBoundaries=[...national.querySelectorAll('[data-boundary]')].map(n=>n.getAttribute('data-boundary'));
+      document.querySelector('[data-close]').click();
+    }
     // Exercise a real search, close-up render, local detail and export in WebKit.
     document.querySelector('.search-trigger').click();
     const input=document.querySelector('#city-search');input.value='820000';input.dispatchEvent(new Event('input',{bubbles:true}));
     document.querySelector('[data-pick="820000"]').click();
     await waitFor(()=>document.querySelector('#selection-dock').textContent.includes('澳门'));
-    await sleep(650);
+    await sleep(850);
+    if(sample==='candidate' && pass==='1')await capture('macau');
     document.querySelector('[data-action="export-map"]').click();
     await waitFor(()=>document.querySelector('[data-save-svg]'));
-    report.exportReady=true;
+    report.exportReady=true;report.workerProjections=projections;report.glyphBatches=glyphBatches;report.contextEvents=contextEvents;
+    if(fallback && (report.renderer!=='svg'||!projections))throw Error('SVG worker fallback did not run');
     return report;
   }
   addEventListener('load',async()=>{
     let result;
-    try { result=await run(); } catch(error) { result={error:String(error.stack||error)}; }
+    try { result=await run(); } catch(error) { result={error:String(error),stack:error.stack}; }
     const reply=await nativeFetch('/result/'+sample+'/'+pass,{method:'POST',body:JSON.stringify(result)});
     const {next}=await reply.json();
     if(next)location.replace(next);

@@ -6,11 +6,10 @@ const reduced = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
 
 // Event handlers collect positions. advance() is called by the renderer's ONE
 // animation clock, so two finger samples describe one pinch and one displayed pose.
-export function globeControls(stage, {get,set,size,request,finish,pick}) {
+export function globeControls(stage, {get,set,size,request,finish,pick,now:clock=()=>performance.now()}) {
   const fingers = new Map();
   let origin, grip, dirty=false, moved=false, lastUp=-Infinity, lastSample=0;
   let animation=null, wheel=null, wheelTimer, velocity=null, lastApplied=0;
-  const clock = () => performance.now();
   const readOrigin = () => { const r=stage.getBoundingClientRect(); origin=[r.left,r.top]; };
   const local = e => [e.clientX-origin[0], e.clientY-origin[1]];
   function stop() {

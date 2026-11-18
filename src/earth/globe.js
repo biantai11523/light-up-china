@@ -1,10 +1,11 @@
-import { frame, HOME, MAX_ZOOM, clamp, dot, project, unproject, RAD } from './camera.js';
+import { frame, HOME, MAX_ZOOM, clamp, dot, unproject, RAD } from './camera.js';
 import { contains } from './mesh.js';
 import { globeGPU } from './webgl.js';
 import { globeControls } from './gestures.js';
-import { globeDefs, labelsFor, labelMarkup, vectorSurface, BLANK } from './drawing.js';
+import { globeDefs, labelsFor, labelMarkup, vectorSurface } from './drawing.js';
 import { cityAppearance } from '../profiles.js';
 import { glyphLayer, labelTracker } from './label-layer.js';
+import { vectorDisplay } from './vector-display.js';
 
 const NS='http://www.w3.org/2000/svg';
 export function createGlobe(container,data,onSelect){
@@ -14,18 +15,32 @@ export function createGlobe(container,data,onSelect){
   const readout=container.querySelector('.earth-readout'), plus=container.querySelector('[data-map="plus"]'),minus=container.querySelector('[data-map="minus"]');
   data.byId=new Map(data.cities.map(c=>[c.id,c]));
   let view={...HOME}, width=390,height=390, selected=new Set(), paints=new Map();
-  let gpu,controls,raf=0,inFrame=false,moving=false,lastVectorTime=-Infinity,detailTimer,displayed=[];
-  let sceneDirty=true,paletteDirty=true,vectorFrame=null,labelsDirty=true,labelFrame=null;
+  let gpu,controls,raf=0,inFrame=false,moving=false,detailTimer,displayed=[];
+  let sceneDirty=true,paletteDirty=true,shownSurface=null,labelsDirty=true,labelFrame=null;
   let lastDetailFrame=null,lastDetailTime=-Infinity,lastReadout=-Infinity;
   const trackLabels=labelTracker(data);
-  let typePlane=null;
+  let typePlane=null,disposed=false,retryTimer=0,attempts=0;
+  const vectors=vectorDisplay(surface,data,schedule);
   const labelNodes=new Map(), palette=new Uint8Array(256*Math.ceil(data.cities.length/256)*4);
   function initGPU(){
+    attempts++;
     try{gpu=globeGPU(canvas,data.cities.length);}catch{gpu=null;}
+    if(gpu){
+      vectors.clear();
+      if(!typePlane)try{typePlane=glyphLayer(schedule);}catch{typePlane=null;}
+    }
     canvas.hidden=!gpu;stage.dataset.renderer=gpu?'webgl':'svg';paletteDirty=true;sceneDirty=true;labelsDirty=true;
   }
   initGPU();
-  try{typePlane=glyphLayer();}catch{typePlane=null;}
+  function retryGraphics(delay){
+    if(disposed || gpu || attempts>=3 || retryTimer || typeof WebGLRenderingContext!=='function')return;
+    retryTimer=setTimeout(()=>{
+      retryTimer=0;
+      if(document.hidden||disposed||gpu)return;
+      if(moving||controls?.interacting){retryGraphics(900);return;}
+      initGPU();schedule();if(!gpu)retryGraphics(2500);
+    },delay);
+  }
   function measure(){
     const rect=stage.getBoundingClientRect();
     width=Math.round(rect.width||Math.min(window.innerWidth||390,760));height=Math.round(rect.height||Math.max(345,width*.96));
@@ -33,18 +48,19 @@ export function createGlobe(container,data,onSelect){
   }
   const camera=()=>frame(view,width,height);
   function drawLabels(f,now){
-    if(!labelsDirty && labelFrame && f.lon===labelFrame.lon && f.lat===labelFrame.lat &&
-       f.zoom===labelFrame.zoom && f.width===labelFrame.width && f.height===labelFrame.height){
-      if(gpu && typePlane)typePlane.replay(f,gpu);
-      return;
+    const same=!labelsDirty && labelFrame && f.lon===labelFrame.lon && f.lat===labelFrame.lat &&
+       f.zoom===labelFrame.zoom && f.width===labelFrame.width && f.height===labelFrame.height;
+    if(!same){
+      displayed=trackLabels(f,selected,paints,moving,now,labelsDirty);
+      labelFrame=f;labelsDirty=false;
     }
-    displayed=trackLabels(f,selected,paints,moving,now,labelsDirty);
-    labelFrame=f;labelsDirty=false;
     if(gpu && typePlane){
       if(labels.firstChild){labels.replaceChildren();labelNodes.clear();}
-      typePlane.draw(f,displayed,paints,selected,gpu);
-      return;
-    }
+      try{
+        if(same && !typePlane.dirty){typePlane.replay(f,gpu);return false;}
+        return typePlane.draw(f,displayed,paints,selected,gpu,moving);
+      }catch{typePlane.dispose();typePlane=null;}
+    }else if(same)return false;
     const keep=new Set();
     for(const l of displayed){
       const item=l.item,key=item.type+item.id;keep.add(key);
@@ -77,59 +93,47 @@ export function createGlobe(container,data,onSelect){
     }
     for(const [key,entry] of labelNodes)if(!keep.has(key)){entry.node.remove();labelNodes.delete(key);}
   }
-  function reuseCloseup(f){
-    if(!moving||!vectorFrame||f.zoom<5||vectorFrame.zoom<5)return false;
-    const old=vectorFrame, scale=f.radius/old.radius, [x,y,z]=project(old.forward,f);
-    if(z<=0||scale<.82||scale>1.24||Math.hypot(x-width/2,y-height/2)>Math.min(width,height)*.15)return false;
-    // Over a small geographic window the tangent plane follows the fingers.
-    // Refresh the exact spherical projection as soon as this margin is used.
-    const a=scale*dot(old.east,f.east), b=-scale*dot(old.east,f.north);
-    const c=-scale*dot(old.north,f.east), d=scale*dot(old.north,f.north);
-    surface.setAttribute('transform','matrix('+[a,b,c,d,x-a*width/2-c*height/2,y-b*width/2-d*height/2].join(' ')+')');
-    return true;
-  }
-  function draw(now=performance.now()){
-    raf=0;
-    inFrame=true;
-    let next=false;
-    try {
-    next=controls?.advance(now) || false;
-    const f=camera();
-    const reuse=!gpu && reuseCloseup(f);
-    if(!gpu && !reuse && moving && now-lastVectorTime<26){next=true;return;}
-    if(paletteDirty){gpu?.palette(palette);paletteDirty=false;}
-    if(gpu){
-      const tiles=f.zoom<3?[data.overview]:data.visible(f);
-      if(gpu.draw(f,tiles,moving))next=true;
-      if(surface.firstChild)surface.replaceChildren();
-    }else if(sceneDirty&&!reuse){
-      const pad=f.zoom>=5?Math.ceil(Math.min(width,height)*.32):0;
-      const expanded=pad?frame(view,width+2*pad,height+2*pad):f;
-      // Increase only the angular bounds for overscan; keep the screen projection.
-      const angle=pad?Math.asin(Math.min(1,Math.hypot(expanded.width,expanded.height)*.52/f.radius))/RAD:f.angle;
-      const dlon=Math.abs(f.lat)+angle>=90?180:Math.asin(Math.min(1,Math.sin(angle*RAD)/Math.cos(f.lat*RAD)))/RAD;
-      const region={...f,angle,dlon};
-      surface.removeAttribute('transform');
-      surface.innerHTML=vectorSurface(data,region,data.visible(region,moving&&view.zoom<5),paints,selected,moving,pad);
-      vectorFrame=f;lastVectorTime=now;
-    }
-    sceneDirty=false;drawLabels(f,now);
-    if(plus.disabled!==(view.zoom>=MAX_ZOOM))plus.disabled=view.zoom>=MAX_ZOOM;
-    if(minus.disabled!==(view.zoom<=1))minus.disabled=view.zoom<=1;
-    if(!moving || now-lastReadout>=110){
+  function updateControls(f,now){
+    const atMax=f.zoom>=MAX_ZOOM, atMin=f.zoom<=1;
+    if(plus.disabled!==atMax)plus.disabled=atMax;
+    if(minus.disabled!==atMin)minus.disabled=atMin;
+    if(moving && now-lastReadout<110)return;
     const precision=f.zoom<12?1:f.zoom<120?2:3;
     const coordinates=Math.abs(f.lat).toFixed(precision)+'°'+(f.lat<0?'S':'N')+'  '+Math.abs(f.lon).toFixed(precision)+'°'+(f.lon<0?'W':'E');
     if(readout.textContent!==coordinates)readout.textContent=coordinates;
     lastReadout=now;
-    }
-    if(moving && f.zoom>=3 && now-lastDetailTime>180 &&
-      (!lastDetailFrame || lastDetailFrame.zoom/f.zoom>1.4 || f.zoom/lastDetailFrame.zoom>1.4 ||
-       Math.sqrt(Math.max(0,2*(1-dot(f.forward,lastDetailFrame.forward))))*f.radius>Math.min(width,height)*.22))detail();
-    } finally {inFrame=false;if(next)schedule();}
   }
-  function schedule(){if(!inFrame&&!raf)raf=requestAnimationFrame(draw);}
+  function prefetch(f,now){
+    if(!moving || f.zoom<3 || now-lastDetailTime<=180)return;
+    const far=!lastDetailFrame || lastDetailFrame.zoom/f.zoom>1.4 || f.zoom/lastDetailFrame.zoom>1.4 ||
+      Math.sqrt(Math.max(0,2*(1-dot(f.forward,lastDetailFrame.forward))))*f.radius>Math.min(width,height)*.22;
+    if(far)detail();
+  }
+  function draw(now=performance.now()){
+    raf=0;inFrame=true;
+    let next=false;
+    try{
+      next=controls?.advance(now)||false;
+      const f=camera();
+      if(paletteDirty){gpu?.palette(palette);paletteDirty=false;}
+      if(gpu){
+        const tiles=f.zoom<3?[data.overview]:data.visible(f);
+        if(gpu.draw(f,tiles,moving))next=true;
+        shownSurface={pose:f,tiles:f.zoom<3?null:gpu.displayed};
+      }else{
+        shownSurface=vectors.draw(f,moving,paints,selected,sceneDirty,now);
+        if(shownSurface.another)next=true;
+      }
+      sceneDirty=false;
+      if((gpu || shownSurface.tiles) && drawLabels(shownSurface.pose,now))next=true;
+      updateControls(f,now);
+      prefetch(f,now);
+    }finally{inFrame=false;if(next)schedule();}
+  }
+  function schedule(){if(!disposed&&!document.hidden&&!inFrame&&!raf)raf=requestAnimationFrame(draw);}
   function flush(){if(raf)cancelAnimationFrame(raf);raf=0;draw();}
   function detail(){
+    if(disposed || document.hidden)return;
     lastDetailFrame=camera();lastDetailTime=performance.now();
     data.loadDetail(lastDetailFrame).catch(()=>{});
   }
@@ -145,11 +149,11 @@ export function createGlobe(container,data,onSelect){
   function pick([x,y],target){
     const explicit=target?.closest?.('[data-pin],[data-city]');
     if(explicit){onSelect(explicit.dataset.pin||explicit.dataset.city);return;}
-    const f=camera(), ll=unproject(x,y,f);if(!ll)return;
+    const f=shownSurface?.pose||camera(), ll=unproject(x,y,f);if(!ll)return;
     const directPin=gpu && typePlane && displayed.find(l=>l.pin && Math.hypot(l.x-x,l.y-y)<3.5);
     if(directPin){onSelect(directPin.item.id);return;}
     let chosen=null, area=Infinity;
-    for(const t of (gpu?.displayed?.[0]?.key>=0?gpu.displayed:data.visible(f,f.zoom<3)))for(const s of t.shapes){
+    for(const t of (shownSurface?.tiles||data.visible(f,f.zoom<3)))for(const s of t.shapes){
       if(s.level!==0 || !contains(s,...ll))continue;
       const span=(s.box[2]-s.box[0])*(s.box[3]-s.box[1]);
       if(span<area){area=span;chosen=data.features[s.idx];}
@@ -162,11 +166,22 @@ export function createGlobe(container,data,onSelect){
   data.onDetail=()=>{sceneDirty=true;schedule();};data.onEvict=tile=>gpu?.evict(tile);
   plus.onclick=()=>controls.step(1.65);minus.onclick=()=>controls.step(1/1.65);
   container.querySelector('[data-map="reset"]').onclick=controls.reset;
-  canvas.addEventListener('webglcontextlost',e=>{e.preventDefault();gpu=null;canvas.hidden=true;stage.dataset.renderer='svg';labelsDirty=sceneDirty=true;finish();});
-  canvas.addEventListener('webglcontextrestored',()=>{initGPU();finish();});
+  canvas.addEventListener('webglcontextlost',e=>{
+    e.preventDefault();if(disposed)return;
+    gpu=null;typePlane?.dispose();typePlane=null;canvas.hidden=true;stage.dataset.renderer='svg';labelsDirty=sceneDirty=true;finish();
+  });
+  canvas.addEventListener('webglcontextrestored',()=>{if(!disposed){initGPU();finish();}});
+  window.addEventListener('pagehide',e=>{
+    controls.stop();cancelAnimationFrame(raf);raf=0;clearTimeout(detailTimer);clearTimeout(retryTimer);retryTimer=0;
+    if(!e.persisted){disposed=true;typePlane?.dispose();gpu?.release();data.dispose?.();}
+  });
+  document.addEventListener('visibilitychange',()=>{
+    if(!document.hidden&&!disposed){retryGraphics(750);labelsDirty=sceneDirty=true;schedule();}
+  });
+  window.addEventListener('pageshow',e=>{if(e.persisted&&!disposed){measure();finish();retryGraphics(750);}});
   window.addEventListener('online',detail);
-  measure();draw();
-  const resize=()=>{const w=width,h=height;measure();if(width!==w||height!==h){controls.stop();labelsDirty=sceneDirty=true;finish();}};
+  measure();draw();retryGraphics(850);
+  const resize=()=>{const w=width,h=height;measure();if(width!==w||height!==h){controls.stop();vectors.invalidate();labelsDirty=sceneDirty=true;finish();}};
   if(typeof ResizeObserver==='function')new ResizeObserver(resize).observe(stage);else window.addEventListener('resize',resize);
   return {
     update(layers,viewName,ids,paintNow=true){
@@ -192,22 +207,26 @@ export function createGlobe(container,data,onSelect){
         changed=true;
       }
       if(!changed)return;
-      paletteDirty=labelsDirty=sceneDirty=true;
+      vectors.invalidate();paletteDirty=labelsDirty=sceneDirty=true;
       if(paintNow){if(moving)schedule();else flush();}
     },
     focus(item){
       controls.stop();
       view={lon:item.focusLon,lat:item.focusLat,zoom:clamp(1.4/(RAD*item.focusSpan),1,MAX_ZOOM)};
-      labelsDirty=sceneDirty=true;finish();flush();
+      vectors.invalidate();labelsDirty=sceneDirty=true;finish();flush();
     },
-    reset(){controls.stop();view={...HOME};labelsDirty=sceneDirty=true;finish();flush();},
+    reset(){controls.stop();view={...HOME};vectors.invalidate();labelsDirty=sceneDirty=true;finish();flush();},
     async prepareExport(){
       controls.stop();clearTimeout(detailTimer);moving=false;stage.classList.remove('is-moving');measure();
       const f=camera(),selection=new Set(selected),colors=new Map(paints);
       const detail=await data.loadDetail(f,{hold:true});sceneDirty=true;flush();
-      return {width:f.width,height:f.height,coarse:detail.coarse,
-        body:'<defs>'+globeDefs+'</defs>'+vectorSurface(data,f,detail.tiles,colors,selection)+
-          labelsFor(data,f,selection,colors).map(l=>labelMarkup(l,colors,selection)).join('')};
+      let svg;
+      if(data.projectFrame){
+        try{svg=await data.projectFrame(f,detail.tiles,colors,selection,false,0);}catch{}
+      }
+      svg??=vectorSurface(data,f,detail.tiles,colors,selection);
+      return {width:f.width,height:f.height,coarse:detail.coarse,body:'<defs>'+globeDefs+'</defs>'+svg+
+        labelsFor(data,f,selection,colors).map(l=>labelMarkup(l,colors,selection)).join('')};
     },
     get interacting(){return moving || controls.interacting;},
     get camera(){return camera();}

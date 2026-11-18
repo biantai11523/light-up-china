@@ -62,9 +62,16 @@ void main(){
 }`;
 
 export function globeGPU(canvas, regionCount) {
-  const gl=canvas.getContext('webgl',{alpha:true,antialias:true,depth:false,stencil:false,premultipliedAlpha:false,powerPreference:'low-power'});
-  if(!gl || !gl.getExtension('OES_element_index_uint'))return null;
+  const options={alpha:true,antialias:true,depth:false,stencil:false,premultipliedAlpha:false,powerPreference:'default'};
+  const modern=typeof WebGL2RenderingContext==='function' && canvas.getContext('webgl2',options);
+  const gl=modern || canvas.getContext('webgl',options);
+  if(!gl || !modern && !gl.getExtension('OES_element_index_uint'))return null;
   function program(vs,fs,names){
+    if(modern){
+      vs='#version 300 es\n'+vs.replace(/\battribute\b/g,'in').replace(/\bvarying\b/g,'out');
+      fs='#version 300 es\n'+fs.replace(/\bvarying\b/g,'in').replace(/\btexture2D\b/g,'texture')
+        .replace(/(precision \w+ float;)/,'$1\nout vec4 outColor;').replace(/\bgl_FragColor\b/g,'outColor');
+    }
     const p=gl.createProgram();
     for(const [kind,src] of [[gl.VERTEX_SHADER,vs],[gl.FRAGMENT_SHADER,fs]]){
       const s=gl.createShader(kind);gl.shaderSource(s,src);gl.compileShader(s);
@@ -181,6 +188,7 @@ export function globeGPU(canvas, regionCount) {
   }
   let displayed=[],type=null;
   return {
+    release(){gl.getExtension('WEBGL_lose_context')?.loseContext?.();},
     drawType(f,pages,version){
       type ||= gpuType(gl,program);
       type(f,pages,version);

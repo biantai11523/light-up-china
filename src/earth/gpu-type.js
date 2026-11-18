@@ -1,15 +1,15 @@
 const vertex = `
 attribute vec4 point;
 uniform vec2 viewport;
-varying vec2 uv;
+varying highp vec2 uv;
 void main(){
   uv=point.zw;
   gl_Position=vec4(2.*point.x/viewport.x-1.,1.-2.*point.y/viewport.y,0.,1.);
 }`;
 const fragment = `
-precision mediump float;
+precision highp float;
 uniform sampler2D atlas;
-varying vec2 uv;
+varying highp vec2 uv;
 void main(){gl_FragColor=texture2D(atlas,uv);}`;
 
 // Text and pins share the globe's drawing buffer. Panning changes a few small
@@ -17,7 +17,6 @@ void main(){gl_FragColor=texture2D(atlas,uv);}`;
 export function gpuType(gl, program) {
   const shader=program(vertex,fragment,'viewport atlas');
   const resources=new WeakMap();
-  let crop=null;
   return (f,pages,version)=>{
     gl.useProgram(shader.p);
     gl.uniform2f(shader.viewport,f.width,f.height);gl.uniform1i(shader.atlas,1);
@@ -34,19 +33,12 @@ export function gpuType(gl, program) {
         gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,gl.LINEAR);
         gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_S,gl.CLAMP_TO_EDGE);
         gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE);
-        gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,gl.RGBA,gl.UNSIGNED_BYTE,page.sheet);
-        page.dirty=null;
-      }else{
-        gl.bindTexture(gl.TEXTURE_2D,r.texture);
-        if(page.dirty){
-          const {x,y,right,bottom}=page.dirty,w=right-x,h=bottom-y;
-          if(!crop)crop=document.createElement('canvas');
-          crop.width=w;crop.height=h;
-          const ctx=crop.getContext('2d');
-          ctx.drawImage(page.sheet,x,y,w,h,0,0,w,h);
-          gl.texSubImage2D(gl.TEXTURE_2D,0,x,y,gl.RGBA,gl.UNSIGNED_BYTE,crop);
-          page.dirty=null;
-        }
+        gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,1024,1024,0,gl.RGBA,gl.UNSIGNED_BYTE,null);
+      }else gl.bindTexture(gl.TEXTURE_2D,r.texture);
+      if(r.generation!==page.generation){r.uploaded=0;r.generation=page.generation;}
+      while(r.uploaded<page.entries.length){
+        const g=page.entries[r.uploaded++];
+        gl.texSubImage2D(gl.TEXTURE_2D,0,g.x,g.y,g.w,g.h,gl.RGBA,gl.UNSIGNED_BYTE,g.pixels);
       }
       gl.bindBuffer(gl.ARRAY_BUFFER,r.quads);
       if(r.version!==version){
