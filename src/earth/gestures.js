@@ -4,6 +4,21 @@ const TAP_SLOP = 4;
 const COAST_TIME = 145;
 const reduced = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
 
+// Near the limb a north-up inverse can demand tens of degrees of spin for
+// one pixel of input. Ease that gain only in the ill-conditioned part; include
+// the radial displacement of a pinch as well as midpoint translation.
+function limitRimTurn(previous, next, from, to, dims) {
+  const r = .46 * Math.min(...dims);
+  const delta = d => (to[d]-dims[d]/2)/(r*next.zoom) - (from[d]-dims[d]/2)/(r*previous.zoom);
+  const travel = Math.hypot(delta(0),delta(1))/RAD;
+  const yaw = wrap(next.lon-previous.lon), pitch = next.lat-previous.lat;
+  const turn = Math.hypot(yaw,pitch);
+  if(turn<=4*travel+1e-8)return next;
+  const gain = travel ? 4-2*Math.expm1(-(turn/travel-4)/2) : 0;
+  const fraction = gain*travel/turn;
+  return {...next,lon:wrap(previous.lon+yaw*fraction),lat:previous.lat+pitch*fraction};
+}
+
 // Event handlers collect positions. advance() is called by the renderer's ONE
 // animation clock, so two finger samples describe one pinch and one displayed pose.
 export function globeControls(stage, {get,set,size,request,finish,pick,now:clock=()=>performance.now()}) {
@@ -39,7 +54,14 @@ export function globeControls(stage, {get,set,size,request,finish,pick,now:clock
     const base={...previous,zoom};
     let next;
     if(grip.anchor && unproject(...mid,frame(base,...dims))) {
-      next=anchored(base,grip.anchor,mid,...dims);
+      const exact=anchored(base,grip.anchor,mid,...dims);
+      next=limitRimTurn(previous,exact,grip.previous,mid,dims);
+      const radius=.46*Math.min(...dims)*zoom;
+      if(next!==exact || Math.abs(next.lat)>=89.999 || Math.abs(mid[0]-dims[0]/2)>=radius*Math.cos(grip.anchor[1]*RAD)){
+        // The north-up constraint has exhausted this grab. Start from what is
+        // actually under the finger so reversing direction responds immediately.
+        grip.anchor=unproject(...mid,frame(next,...dims));
+      }
     } else {
       next=orbit(base,grip.previous,mid);
       // Reacquire a surface anchor after a finger crosses the silhouette.
@@ -57,7 +79,8 @@ export function globeControls(stage, {get,set,size,request,finish,pick,now:clock
     consume();
     if(wheel) {
       const v=get(), dims=size(), f=frame(v,...dims), anchor=unproject(...wheel.point,f);
-      set(anchored({...v,zoom:clamp(v.zoom*Math.exp(wheel.delta),1,MAX_ZOOM)},anchor,wheel.point,...dims));
+      const zoomed=anchored({...v,zoom:clamp(v.zoom*Math.exp(wheel.delta),1,MAX_ZOOM)},anchor,wheel.point,...dims);
+      set(limitRimTurn(v,zoomed,wheel.point,wheel.point,dims));
       wheel=null;
     }
     if(!animation)return false;

@@ -130,6 +130,33 @@
         throw Error('Unexpected boundary hierarchy at national scale');
       report.nationalBoundaries=[...national.querySelectorAll('[data-boundary]')].map(n=>n.getAttribute('data-boundary'));
       document.querySelector('[data-close]').click();
+
+      // Reproduce a rim grab that used to jump from the north pole to a
+      // different inverse solution. Do this outside the timed comparisons.
+      document.querySelector('[data-map="reset"]').click();
+      await sleep(500);
+      const b=bounds(),cx=b.left+b.width/2,cy=b.top+b.height/2,r=.46*Math.min(b.width,b.height);
+      const latitude=()=>{
+        const m=document.querySelector('.earth-readout').textContent.match(/([\d.]+)°([NS])/);
+        return Number(m[1])*(m[2]==='N'?1:-1);
+      };
+      dispatch('pointerdown',1,cx,cy);
+      for(let i=1;i<=7;i++){
+        dispatch('pointermove',1,cx,cy+r*Math.sin(i*Math.PI/180));await frame();
+      }
+      await sleep(130);dispatch('pointerup',1,cx,cy+r*Math.sin(7*Math.PI/180));
+      await frame();await frame();
+      const sx=cx-r*.8,sy=cy-r*.55;
+      let previous=latitude(),maxStep=0;
+      if(Math.abs(previous-35)>1)throw Error('Polar drag test did not reach its start pose');
+      dispatch('pointerdown',1,sx,sy);
+      for(const i of [...Array.from({length:72},(_,i)=>i+1),...Array.from({length:30},(_,i)=>71-i)]){
+        dispatch('pointermove',1,sx+i,sy+i*.13);await frame();
+        const lat=latitude();maxStep=Math.max(maxStep,Math.abs(lat-previous));previous=lat;
+      }
+      await sleep(130);dispatch('pointerup',1,sx+42,sy+42*.13);
+      if(maxStep>32 || !document.querySelector('#selection-dock').hidden)throw Error('Polar drag jumped or selected a region');
+      report.rimDragPassed=true;
     }
     // Exercise a real search, close-up render, local detail and export in WebKit.
     document.querySelector('.search-trigger').click();

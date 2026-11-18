@@ -34,24 +34,22 @@ export function intersects([west,south,east,north], f) {
   if (south > f.lat+f.angle || north < f.lat-f.angle) return false;
   return Math.abs(wrap((west+east)/2-f.lon)) <= (east-west)/2 + f.dlon;
 }
-// Solve the north-up orthographic inverse for camera orientation. Both polar
-// solutions can be valid; prefer the one continuous with the previous pose.
+// Longitude has two inverse solutions: sin(delta) fixes where the anchor
+// appears horizontally. Stay on its current meridian branch even when the
+// requested latitude exceeds a pole. Switching roots there flips the globe.
 export function anchored(view, anchor, point, width, height) {
   if (!anchor) return view;
   const radius=.46*Math.min(width,height)*view.zoom;
   const latitude=anchor[1]*RAD;
-  const maxX=Math.max(1e-8,Math.cos(latitude));
-  const x=clamp((point[0]-width/2)/radius,-maxX,maxX);
-  const y=(height/2-point[1])/radius;
-  const front=Math.sqrt(Math.max(0,1-x*x-y*y));
-  const beta=Math.atan2(y,front);
-  const angle=Math.asin(clamp(Math.sin(latitude)/Math.max(1e-10,Math.hypot(y,front)),-1,1));
-  let best, bestScore=Infinity;
-  for(const candidate of [angle-beta,Math.PI-angle-beta]){
-    const raw=wrap(candidate/RAD), lat=clamp(raw,-89.999,89.999), p=lat*RAD;
-    const lon=wrap(anchor[0]-Math.atan2(x,front*Math.cos(p)-y*Math.sin(p))/RAD);
-    const score=(lat-view.lat)**2 + (wrap(lon-view.lon)*Math.cos(p))**2 + 1000*(raw-lat)**2;
-    if(score<bestScore){bestScore=score;best={lon,lat,zoom:view.zoom};}
-  }
-  return best;
+  const reach=Math.cos(latitude);
+  const previous=wrap(anchor[0]-view.lon)*RAD;
+  const sinDelta=clamp((point[0]-width/2)/(radius*Math.max(1e-10,reach)),-1,1);
+  const principal=Math.asin(sinDelta);
+  const delta=reach<1e-8 ? previous : Math.cos(previous)<0 ? Math.PI-principal : principal;
+  const x=reach*Math.sin(delta);
+  const vertical=Math.sqrt(Math.max(0,1-x*x));
+  const y=clamp((height/2-point[1])/radius,-vertical,vertical);
+  const front=Math.sqrt(Math.max(0,vertical*vertical-y*y));
+  const pitch=Math.atan2(Math.sin(latitude),reach*Math.cos(delta))-Math.atan2(y,front);
+  return {lon:wrap(anchor[0]-delta/RAD),lat:vertical<1e-8 ? view.lat : clamp(pitch/RAD,-89.999,89.999),zoom:view.zoom};
 }

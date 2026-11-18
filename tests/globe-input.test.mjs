@@ -3,11 +3,11 @@ import assert from 'node:assert/strict';
 import {globeControls} from '../src/earth/gestures.js';
 import {frame, HOME, project, unit, unproject, wrap} from '../src/earth/camera.js';
 
-function replay(move, reduce=false) {
+function replay(move, reduce=false, initial=HOME) {
   const saved=Object.fromEntries(['window','document','matchMedia'].map(k=>[k,globalThis[k]]));
   globalThis.window=new EventTarget();globalThis.document=new EventTarget();
   globalThis.matchMedia=()=>({matches:reduce});
-  let view={...HOME},t=1000,solves=0,bounds=0,picks=0;
+  let view={...initial},t=1000,solves=0,bounds=0,picks=0;
   const stage=new EventTarget(), dims=[402,406];
   stage.getBoundingClientRect=()=>{bounds++;return {left:0,top:0};};
   const controls=globeControls(stage,{get:()=>view,set:v=>{view=v;solves++;},size:()=>dims,now:()=>t,
@@ -72,4 +72,25 @@ test('coast distance is independent of 60/120 Hz and a new touch stops it immedi
   }
   assert.ok(Math.abs(wrap(run(60)-run(120)))<.04);
   run(120,true);
+});
+
+test('slow rim drags and reversals cannot flip hemispheres at the north-up pole constraint',()=>{
+  for(const [lat,x,y,dir] of [[35,-.8,-.55,1],[-35,-.8,.55,1],[-15,.85,-.05,1],[84,.6,.45,-1],[-84,.6,-.45,-1]]){
+    replay(({touch,step,time,stats})=>{
+      const radius=frame(stats().view,402,406).radius;
+      const px=201+x*radius, py=203+y*radius;
+      const point=i=>[px+dir*i,py+dir*.13*i];
+      touch('pointerdown',1,...point(0));
+      let last=stats().view;
+      for(const i of [...Array.from({length:70},(_,i)=>i+1),...Array.from({length:55},(_,i)=>69-i)]){
+        time(9);touch('pointermove',1,...point(i));step(0);
+        const v=stats().view,turn=Math.hypot(wrap(v.lon-last.lon),v.lat-last.lat);
+        // The first sample also consumes the four-pixel tap dead zone.
+        assert.ok(turn<(i===4?8:2.1),'one slow sample moved the camera '+turn+' degrees');
+        assert.ok(Math.abs(v.lat)<=89.999);last=v;
+      }
+      touch('pointerup',1,...point(15));
+      assert.equal(stats().picks,0);
+    },true,{lon:179.7,lat,zoom:1});
+  }
 });

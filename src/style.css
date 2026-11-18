@@ -63,7 +63,7 @@ button .icon{pointer-events:none}
 
 /* The map is borderless; the controls use the same hard edges as the header. */
 .workspace{display:block}
-.map-card{width:100%;border:0;background:transparent;scroll-margin-top:12px}
+.map-card{width:100%;border:0;background:transparent;scroll-margin-top:calc(12px + env(safe-area-inset-top,0px))}
 .map-top{display:flex;align-items:center;justify-content:space-between;gap:20px;padding:0 0 16px}
 .map-title{display:flex;align-items:center;gap:8px;margin:0;font-size:15px;font-weight:800}
 .sync-status{display:flex;align-items:center;gap:6px;padding-left:2px;font-size:10px;color:var(--muted);white-space:nowrap}
@@ -197,6 +197,10 @@ body.has-selection:not(.modal-open) #toast{bottom:124px}
 @keyframes appear{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:translateY(0)}}
 @media(prefers-reduced-motion:no-preference){.map-city-label{animation:label-appear .14s ease-out}@keyframes label-appear{from{opacity:0}to{opacity:1}}}
 @media(hover:hover){.btn:hover{transform:translate(-1px,-1px);box-shadow:4px 4px 0 var(--ink)}.view-tabs button:not(.active):hover{background:var(--profile-muted)}.city-row:hover{background:#eceee3}}
+@media(pointer:coarse){
+  #app .shell{padding-block-start:env(safe-area-inset-top,0px)}
+  body::before{content:'';position:fixed;inset:0 0 auto;height:env(safe-area-inset-top,0px);z-index:50;background:var(--paper);pointer-events:none}
+}
 @media(max-width:1000px){.shell{padding:0 28px}.stat{padding:16px 18px}.stat-progress{display:block}.stat-progress small{display:block;margin-top:4px}}
 @media(max-width:760px){
   .shell{padding:0 16px}.topbar{min-height:68px;gap:12px}.brand{gap:10px}.brand-mark{width:35px;height:35px;box-shadow:2px 2px 0 var(--ink)}.brand-mark .icon{width:24px;height:24px}.brand-word{font-size:21px;letter-spacing:0}
