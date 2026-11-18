@@ -29,7 +29,7 @@ async function readAsset(url, type = 'arrayBuffer', timeout = 18000){
 }
 export async function loadEarth() {
   const root=dataRoot();
-  const data=catalog(await readAsset(new URL('atlas.json',root), 'json'));
+  const data=catalog(await readAsset(new URL('atlas.json?print=2',root), 'json'));
   const printFiles = new Map();
   data.readPrintFile = name => {
     if (!printFiles.has(name)) {

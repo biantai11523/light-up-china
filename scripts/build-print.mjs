@@ -6,7 +6,7 @@ import { gzipSync } from 'node:zlib';
 import { geoStream } from 'd3-geo';
 import { meshLayout } from '../src/earth/boundaries.js';
 import { decodePacket } from '../src/earth/mesh.js';
-import { collectCountry, printPolygon, worldProjection } from '../src/earth/mercator.js';
+import { collectCountry, MAP_WIDTH, printPolygon, worldProjection } from '../src/earth/mercator.js';
 
 const root = new URL('../public/data/earth/', import.meta.url);
 const catalogFile = new URL('atlas.json', root);
@@ -19,7 +19,7 @@ const batches = Array.from({length: Math.ceil(layout.regions / batchSize)}, () =
 
 // Simplify after projection. A geographic tolerance would remove visibly more
 // coastline near Greenland than near the equator at the same print resolution.
-function simplify(points) {
+function simplify(points, tolerance) {
   if (points.length < 4) return points;
   const keep = new Uint8Array(points.length);
   const last = points.length - 1;
@@ -29,7 +29,7 @@ function simplify(points) {
     const end = stack.pop(), start = stack.pop();
     const [ax, ay] = points[start], [ex, ey] = points[end];
     const dx = ex - ax, dy = ey - ay, length2 = dx * dx + dy * dy;
-    let best = .12 ** 2, pivot = 0;
+    let best = tolerance ** 2, pivot = 0;
     for (let i = start + 1; i < end; i++) {
       const [x, y] = points[i];
       const t = length2 ? Math.max(0, Math.min(1, ((x-ax)*dx + (y-ay)*dy) / length2)) : 0;
@@ -41,18 +41,19 @@ function simplify(points) {
   return points.filter((_, i) => keep[i]);
 }
 
-function printPath(geometry) {
+function printPath(geometry, tolerance = .12) {
   let closed = false, points;
   const paths = [];
+  const precision = tolerance < .02 ? 10000 : tolerance < .08 ? 1000 : 100;
   const stream = projection.stream({
     polygonStart() { closed = true; }, polygonEnd() { closed = false; },
     lineStart() { points = []; },
     point(x, y) { points.push([x, y]); },
     lineEnd() {
-      let line = simplify(points);
+      let line = simplify(points, tolerance);
       if (closed && line.length < 3) line = points;
       if (line.length < (closed ? 3 : 2)) return;
-      const coords = line.map(([x,y]) => Math.round(x*100)/100 + ',' + Math.round(y*100)/100);
+      const coords = line.map(([x,y]) => Math.round(x*precision)/precision + ',' + Math.round(y*precision)/precision);
       paths.push('M' + coords.join(' ') + (closed ? 'Z' : ''));
     }
   });
@@ -69,7 +70,10 @@ for (const file of Object.values(atlas.detail)) {
     const geometry = printPolygon(s);
     if (region) {
       const group = batches[Math.floor(s.idx / batchSize)];
-      group[id] = (group[id] || '') + printPath(geometry);
+      const row = atlas.regions[s.idx];
+      const span = row[7] * (MAP_WIDTH / 360) / Math.cos(row[6] * Math.PI / 180);
+      // A print-scale tolerance alone can turn Macau's islands into triangles.
+      group[id] = (group[id] || '') + printPath(geometry, Math.min(.12, span / 80));
     } else {
       collectCountry(base, id, s, geometry, printPath);
     }

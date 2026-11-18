@@ -54,7 +54,8 @@ test('full-bleed world exports preserve all four view palettes and both hemisphe
     searchAndSelect(w,'820000');
     const local=await exported();
     assert.match(local,/data-city="820000"/);assert.match(local,/>澳门<\/text>/);
-    assert.match(local,/data-pin="820000"/);
+    assert.doesNotMatch(local,/<circle\b|data-pin=/);
+    assert.match(local,/<path data-city="820000"[^>]* d="M[^"]+Z"/);
     assert.equal(fill(local,'820000'),'#ff976f');
     d.querySelector('[data-action="deselect"]').click();
     assert.equal(await exported()===overview,true,'a Macau close-up exports exactly the same world extent and geometry');

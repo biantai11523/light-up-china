@@ -48,6 +48,9 @@ test('the print assets cover every selectable region and all country coastlines'
     const d=batches[Math.floor(i/raw.print.batchSize)][id];
     assert.ok(d.startsWith('M') && d.endsWith('Z') && !/NaN|Infinity/.test(d),id);
   }
+  const macau=raw.regions.findIndex(([id])=>id==='820000');
+  const parts=batches[Math.floor(macau/raw.print.batchSize)]['820000'].match(/M[^Z]+Z/g);
+  assert.ok(parts.length>=2 && parts.every(ring=>ring.split(' ').length>8), 'the peninsula and islands retain their coastlines');
 });
 
 test('unavailable print assets fall back to local world geometry and recover on the next export', async () => {
@@ -65,9 +68,15 @@ test('unavailable print assets fall back to local world geometry and recover on 
   const fallback=await prepareWorldMap(data,paints,new Set([id]));
   assert.equal(fallback.coarse,true);
   for(const code of [id,ca])assert.ok(fallback.body.includes('data-city="'+code+'"'));
-  assert.ok(fallback.body.includes('data-country="BRA"') && fallback.body.includes('data-pin="820000"'));
+  assert.ok(fallback.body.includes('data-country="BRA"'));
+  assert.doesNotMatch(fallback.body,/<circle\b|data-pin=/);
   fail=false;requests.length=0;
   const fine=await prepareWorldMap(data,paints,new Set([id]));
   assert.equal(fine.coarse,false);assert.equal(requests.length,3);
   assert.ok(fine.body.includes('data-country="GRL"') && fine.body.includes('data-city="'+ca+'"'));
+  assert.doesNotMatch(fine.body,/<circle\b|data-pin=/);
+  assert.ok(fine.body.indexOf('data-city="820000"') > fine.body.indexOf('data-boundary="country"'));
+  const macau=data.byId.get(id), [cx,cy]=worldProjection()([macau.lon,macau.lat]);
+  const label=fine.body.match(/<text x="([\d.]+)" y="([\d.]+)"[^>]*>澳门<\/text>/);
+  assert.ok(label && (Math.abs(+label[1]-cx)>macau.emWidth*5+1 || +label[2]+3<cy || +label[2]-10>cy));
 });

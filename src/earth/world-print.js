@@ -29,12 +29,12 @@ async function printGeometry(data, marks) {
   // The global mesh is already resident, including the opposite hemisphere.
   // A missing print batch only reduces detail for the affected paths.
   const fallback = {land: {}, cut: {}, borders: []};
-  const path = geoPath(projection).digits(2);
+  const path = geoPath(projection).digits(2), regionPath = geoPath(projection).digits(4);
   for (const tile of data.low) for (const shape of tile.shapes) {
     const id = data.features[shape.idx].id;
     if (!base && shape.level === 2) collectCountry(fallback, id, shape, printPolygon(shape), path);
     if (shape.level === 0 && missing.has(id)) {
-      regions.set(id, (regions.get(id) || '') + (path(printPolygon(shape)) || ''));
+      regions.set(id, (regions.get(id) || '') + (regionPath(printPolygon(shape)) || ''));
     }
   }
   fallback.borders = fallback.borders.join('');
@@ -55,11 +55,13 @@ function grid() {
 }
 
 function annotations(data, marks) {
-  const boxes = [], labels = [], pins = [];
-  function place(item, size, color, bold, offsets) {
+  const boxes = [], labels = [];
+  function place(item, size, color, bold, gap = 0) {
     if (item.lat < SOUTH || item.lat > NORTH) return;
     const [x, y] = projection([item.lon, item.lat]), half = size * item.emWidth / 2 + 2;
-    for (const [dx, dy] of offsets(half)) {
+    const side = half + gap + 2, above = -gap - 4, below = gap + size + 2;
+    const offsets = gap ? [[side,3],[-side,3],[0,above],[0,below],[side,above],[-side,above],[side,below],[-side,below]] : [[0,3]];
+    for (const [dx, dy] of offsets) {
       const tx = x + dx, ty = y + dy;
       const box = {l: tx-half, r: tx+half, t: ty-size, b: ty+3};
       if (box.l < 3 || box.r > MAP_WIDTH-3 || box.t < 3 || box.b > MAP_HEIGHT-3) continue;
@@ -69,27 +71,23 @@ function annotations(data, marks) {
       break;
     }
   }
-  const center = () => [[0, 3]];
-  const offsets = half => [[half + 4, 3], [-half - 4, 3], [0, -6], [0, 13]];
-  for (const {item, ink, pin, emphasized} of marks) if (pin) {
+  // Reserve the small coloured areas themselves before placing any names.
+  for (const {item, gap} of marks) if (gap) {
     const [x, y] = projection([item.lon, item.lat]);
-    pins.push(`<circle data-pin="${esc(item.id)}" cx="${fixed(x)}" cy="${fixed(y)}" r="2.7" fill="${ink}" stroke="${emphasized ? '#344334' : '#9aa99b'}" stroke-width=".75"/>`);
-    boxes.push({l: x-2.7, r: x+2.7, t: y-2.7, b: y+2.7});
+    boxes.push({l: x-gap, r: x+gap, t: y-gap, b: y+gap});
   }
-  // Selected regions get first choice of label positions. All pins are drawn
-  // independently so a crowded label cannot erase a small recorded place.
-  for (const {item, pin, emphasized} of [...marks].reverse()) {
-    if (emphasized) place(item, 10, '#294033', true, pin || sizeOnMap(item) < item.emWidth*10+8 ? offsets : center);
+  for (const {item, gap, emphasized} of [...marks].reverse()) {
+    if (emphasized) place(item, 10, '#294033', true, gap);
   }
   const countries = data.countries.filter(item => sizeOnMap(item) > 32).sort((a,b) => b.span-a.span);
   for (const item of countries) {
     const large = sizeOnMap(item) >= 115;
-    place(item, large ? 14 : 10.5, '#505f50', large, center);
+    place(item, large ? 14 : 10.5, '#505f50', large);
   }
   for (const [label, lon, lat] of [['太平洋', -151, -9], ['大西洋', -14, -25], ['印度洋', 77, -27], ['北冰洋', 98, 82]]) {
-    place({label, lon, lat, emWidth: label.length}, 15, '#6a8b7c', false, center);
+    place({label, lon, lat, emWidth: label.length}, 15, '#6a8b7c', false);
   }
-  return `<g text-anchor="middle" paint-order="stroke" stroke="#f6f6ee" stroke-opacity=".84" stroke-width="1.9" stroke-linejoin="round">${labels.join('')}</g>${pins.join('')}`;
+  return `<g text-anchor="middle" paint-order="stroke" stroke="#f6f6ee" stroke-opacity=".84" stroke-width="1.9" stroke-linejoin="round">${labels.join('')}</g>`;
 }
 
 export async function prepareWorldMap(data, paints, selected) {
@@ -98,20 +96,26 @@ export async function prepareWorldMap(data, paints, selected) {
     const item = data.byId.get(id);
     if (!item) continue;
     const on = selected.has(id), paint = paints.get(id);
+    const span = sizeOnMap(item);
+    const gap = span < item.emWidth*10+8 ? Math.min(12, 1+span/2) : 0;
     marks.push({item, on, emphasized: on || !!paint?.emphasized, category: paint?.category || '',
-      ink: on ? '#ff976f' : paint.fill, pin: sizeOnMap(item) < 7});
+      ink: on ? '#ff976f' : paint.fill, gap, span});
   }
   marks.sort((a,b) => Number(a.on)-Number(b.on) || Number(a.emphasized)-Number(b.emphasized) || b.item.span-a.item.span || a.item.idx-b.item.idx);
   const {base, regions, coarse} = await printGeometry(data, marks);
   const landPaths = paths => Object.entries(paths).map(([id, d]) =>
     `<path data-country="${esc(id)}" d="${d}"/>`).join('');
   const ground = use('print-land');
-  const footprints = marks.map(({item, category, ink}) =>
-    `<path data-city="${esc(item.id)}" data-profile-category="${category}" fill="${ink}" d="${regions.get(item.id) || ''}"/>`).join('');
+  const footprints = [], smallFootprints = [];
+  for (const {item, category, ink, span} of marks) {
+    // A coastline stroke can cover an entire microstate. Keep its true fill visible.
+    const paths = span < 7 ? smallFootprints : footprints;
+    paths.push(`<path data-city="${esc(item.id)}" data-profile-category="${category}" fill="${ink}" d="${regions.get(item.id) || ''}"/>`);
+  }
   const body = `<defs><g id="print-land">${landPaths(base.land)}</g></defs>
     <rect x="-1" y="-1" width="${MAP_WIDTH+2}" height="${MAP_HEIGHT+2}" fill="#d4e4d9"/>${grid()}
-    <g fill="#f8f7ef">${ground}${landPaths(base.cut)}</g>${footprints}
+    <g fill="#f8f7ef">${ground}${landPaths(base.cut)}</g>${footprints.join('')}
     <g data-boundary="country" fill="none" stroke="#566453" stroke-width=".6" stroke-linejoin="round">${ground}<path d="${base.borders}"/></g>
-    ${annotations(data, marks)}`;
+    ${smallFootprints.join('')}${annotations(data, marks)}`;
   return {width: MAP_WIDTH, height: MAP_HEIGHT, body, coarse};
 }

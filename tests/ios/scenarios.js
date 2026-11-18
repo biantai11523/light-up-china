@@ -181,7 +181,7 @@
     await waitFor(()=>document.querySelector('[data-save-svg]'));
     if(sample==='candidate'){
       const world=new DOMParser().parseFromString(await lastVector.text(),'image/svg+xml');
-      if(!world.querySelector('[data-pin="820000"]') || !world.querySelector('[data-country="BRA"]') ||
+      if(world.querySelector('circle,[data-pin]') || !world.querySelector('[data-country="BRA"]') ||
         world.querySelector('[data-city="820000"]')?.getAttribute('fill')!=='#ff976f')throw Error('Missing Macau or the opposite hemisphere');
       if(report.worldViewBox && world.documentElement.getAttribute('viewBox')!==report.worldViewBox)throw Error('Export follows the local camera');
       report.worldPng=await pngDimensions();
