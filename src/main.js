@@ -4,7 +4,8 @@ import { createMap } from './map.js';
 import { getState, saveCity, saveCities } from './api.js';
 import { readLocal, writeLocal, escapeHtml as e, summarize, normalizeRecord } from './store.js';
 import { createMapSnapshot, createMapSvgBlob, renderMapPng, downloadFile } from './export.js';
-import { PROFILES, cleanLayers, recordsForView, cityAppearance } from './profiles.js';
+import { PROFILES, cleanLayers, recordsForView, cityAppearance, visibleEntries } from './profiles.js';
+import { findCities } from './search.js';
 
 const app = document.querySelector('#app');
 const cache = readLocal('dianliang-cache-v1', { records: {}, activity: [] });
@@ -13,7 +14,10 @@ let activeView = readLocal('dianliang-view','together');
 if(!['together','xuan','xi','all'].includes(activeView))activeView='together';
 let activityAll = cache.activityAll || (cache.activity || []).map(row=>({...row,profile:'together'}));
 let records = recordsForView(layers,activeView), activity = [], data, map;
-let connected = false, syncing = false, saving = false, demo = false, modalCleanup = null, lastFocus = null, toastTimer, lastSync = 0, writeEpoch = 0;
+let connection = 'connecting', syncing = false, saving = false, demo = false, modalCleanup = null, lastFocus = null, toastTimer, writeEpoch = 0;
+let lastSync = cache.lastSync || 0;
+let refreshOpenSheet = null;
+let lastRemoteState = null;
 let lockedScroll = null;
 const selectedIds = new Set();
 const cityById = new Map();
@@ -22,7 +26,7 @@ const today = () => { const d = new Date(); return `${d.getFullYear()}-${String(
 const nickname = () => readLocal('dianliang-nickname', '访客');
 const scrollBehavior = () => matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth';
 const scrollToMap = () => document.querySelector('.map-card').scrollIntoView({ behavior: scrollBehavior(), block: 'start' });
-function cacheState(){writeLocal('dianliang-cache-v1',{layers,activityAll,records:layers.together,activity:activityAll.filter(row=>row.profile==='together')});}
+function cacheState(){writeLocal('dianliang-cache-v1',{layers,activityAll,lastSync,records:layers.together,activity:activityAll.filter(row=>row.profile==='together')});}
 function refreshView(){
   records=recordsForView(layers,activeView);
   activity=activityAll.filter(row=>activeView==='all'||row.profile===activeView||activeView!=='together'&&row.profile==='together');
@@ -31,21 +35,20 @@ function updateMap(){if(data)map?.update(records,selectedIds,Object.fromEntries(
 function switchView(profile){
   if(saving||document.querySelector('.sheet'))return;
   activeView=activeView===profile?'all':profile;
-  selectedIds.clear();writeLocal('dianliang-view',activeView);render();
+  writeLocal('dianliang-view',activeView);render();
 }
 
 app.innerHTML = `<div class="shell">
   <header class="topbar"><a class="brand" href="./" aria-label="点亮首页"><span class="brand-mark">${icon('spark')}</span><div><div class="brand-word">点亮地图</div></div></a><nav class="top-actions" aria-label="主导航"><button class="top-link active" data-action="home">地图</button><button class="top-link" data-action="activity">已点亮</button><button class="btn" data-action="share">${icon('share')}分享</button></nav></header>
   <nav class="view-tabs" aria-label="足迹分类">${Object.entries(PROFILES).map(([id,profile])=>`<button data-view="${id}" aria-pressed="false" style="--profile-color:${profile.color};--profile-muted:${profile.muted}">${profile.label}</button>`).join('')}</nav><div class="view-status" id="view-status"></div>
-  <section class="overview"><h1>城市点亮地图</h1><p>点选城市进行标记，修改自动同步。</p></section>
   <div id="demo-banner"></div><div class="offline-banner" id="offline-banner" role="status"><span>正在连接共享地图…</span><button data-action="refresh">重新连接</button></div>
   <section class="stats" aria-label="点亮统计"><div class="stat accent"><div class="stat-label">${icon('pin')}已点亮</div><div class="stat-value"><span id="stat-count">00</span><span class="stat-unit">座</span></div></div><div class="stat"><div class="stat-label">${icon('map')}省级区域</div><div class="stat-value"><span id="stat-provinces">00</span><span class="stat-unit">/ 34</span></div></div><div class="stat"><div class="stat-label">${icon('heart')}备注</div><div class="stat-value"><span id="stat-memories">00</span><span class="stat-unit">条</span></div></div><div class="stat progress-stat"><div class="stat-label">点亮比例</div><div class="stat-progress"><strong id="stat-percent">0.0%</strong><small id="stat-total">正在加载</small></div><div class="progress-track"><span id="progress-fill"></span></div></div></section>
   <main class="workspace"><section class="map-card" aria-label="中国城市点亮地图">
-    <div class="map-top"><div class="map-heading"><div class="map-title">${icon('globe')}中国地图</div><div class="sync-status offline" id="sync-status"><span class="sync-dot"></span><span>连接中</span></div></div></div>
+    <div class="map-top"><h1 class="map-title">${icon('globe')}中国地图</h1><div class="sync-status" id="sync-status"><span class="sync-dot"></span><span>连接中</span></div></div>
     <div class="map-stage"><svg class="map-svg" role="img" aria-label="中国省市地图，可以缩放拖动；也可使用搜索按钮选择城市"></svg><div class="map-stamp">省界 / 市界</div><div class="compass">N</div><div class="map-hint">${icon('pin')}点击多选 · 再点取消 · 双指缩放</div><div class="sea-inset"><svg aria-label="南海诸岛"></svg><span>南海诸岛</span></div></div>
-    <div class="map-tools" role="group" aria-label="地图工具"><button class="search-trigger" data-action="search"><span>${icon('search')}搜索城市或省份</span><kbd>/</kbd></button><div class="map-controls"><button class="icon-btn" data-map="plus" aria-label="放大地图">${icon('plus')}</button><button class="icon-btn" data-map="minus" aria-label="缩小地图">${icon('minus')}</button><button class="icon-btn" data-map="reset" aria-label="回到全国地图">${icon('fit')}</button></div></div>
+    <div class="map-tools" role="group" aria-label="地图工具"><button class="search-trigger" data-action="search"><span>${icon('search')}搜索城市或备注</span><kbd>/</kbd></button><div class="map-controls"><button class="icon-btn" data-map="plus" aria-label="放大地图">${icon('plus')}</button><button class="icon-btn" data-map="minus" aria-label="缩小地图">${icon('minus')}</button><button class="icon-btn" data-map="reset" aria-label="回到全国地图">${icon('fit')}</button></div></div>
     <div class="map-legend"><div class="legend-items"><span class="legend-item"><i class="swatch green"></i>一起</span><span class="legend-item"><i class="swatch xuan"></i>轩宝</span><span class="legend-item"><i class="swatch xi"></i>曦宝</span><span class="legend-item"><i class="swatch both"></i>分别去过</span><span class="legend-item"><i class="swatch"></i>未去过</span><span class="legend-item"><i class="swatch orange"></i>选中</span></div><div class="legend-boundary"><span><i></i>省界</span><span><i class="thin"></i>市界</span></div></div><div class="map-bottom-actions"><button class="btn export-trigger" data-action="export-map">${icon('download')}导出图片</button></div></section>
-  <aside class="sidebar"><div class="city-panel" id="city-panel"></div><div class="shared-note"><div class="note-title">${icon('people')}共享编辑</div><p>所有访客共用一份数据。<br>修改自动保存，每 15 秒同步。</p><div class="mini-row"><span class="badge">无需登录</span><button data-action="share">分享地图 ↗</button></div></div><button class="view-demo" data-action="demo">查看示例地图</button></aside></main>
+  </main>
   <section class="activity-section"><div class="section-heading"><h2>${icon('clock')}最近修改</h2><button class="text-button" data-action="activity">已点亮城市 ${icon('arrow')}</button></div><div id="recent-activity"></div></section>
   <footer class="footer"><strong>城市点亮地图</strong><span><button data-action="about">地图数据与使用说明 ↗</button></span></footer>
   </div><div class="selection-dock" id="selection-dock" hidden></div><nav class="mobile-nav" aria-label="手机导航"><button class="active" data-action="home">${icon('map')}地图</button><button data-action="activity">${icon('pin')}已点亮</button><button data-action="share">${icon('people')}分享</button></nav>`;
@@ -60,10 +63,11 @@ function toast(message, undo) {
 }
 function updateStatus(message) {
   const status = document.querySelector('#sync-status');
-  status.classList.toggle('offline', !connected && !demo);
-  status.querySelector('span:last-child').textContent = demo ? '示例模式' : message || (connected ? '已同步' : '暂时离线');
+  const labels = { connecting: '连接中', online: '已同步', offline: '暂时离线' };
+  status.dataset.state = demo ? 'online' : connection;
+  status.querySelector('span:last-child').textContent = demo ? '示例模式' : message || labels[connection];
   const banner = document.querySelector('#offline-banner');
-  banner.classList.toggle('visible', !connected && !demo);
+  banner.classList.toggle('visible', connection === 'offline' && !demo);
   banner.querySelector('span').textContent = lastSync ? '暂时离线，展示上次同步的数据。恢复连接后可继续点亮。' : '共享地图尚未连接。连接成功后即可点亮。';
 }
 function render() {
@@ -85,19 +89,29 @@ function render() {
   const recent = activity.slice(0,3);
   document.querySelector('#recent-activity').innerHTML = recent.length ? `<div class="recent-grid">${recent.map(a => `<button class="activity-item" data-select="${a.cityId}">${icon(a.active ? 'diagonal' : 'undo')}<div class="activity-city">${e(cityById.get(a.cityId)?.name || a.cityId)}</div><small>${e(PROFILES[a.profile || 'together']?.short || '一起')} · ${e(a.author || '访客')} · ${a.active ? '保存了标记' : '取消了点亮'}</small></button>`).join('')}</div>` : `<div class="empty-activity"><div class="empty-text">${icon('pin')}<div><strong>暂无修改记录</strong><p>点选地图或搜索城市，添加标记。</p></div></div><button class="text-button" data-action="search">选择城市 ${icon('arrow')}</button></div>`;
   updateStatus();
+  refreshOpenSheet?.();
 }
 function renderPanel() {
-  const panel = document.querySelector('#city-panel');
   const cities = [...selectedIds].map(id => cityById.get(id));
-  const city = cities.length === 1 ? cities[0] : null;
   const dock = document.querySelector('#selection-dock');
   dock.hidden = !cities.length;
   document.body.classList.toggle('has-selection', !!cities.length);
-  const pending = cities.filter(c => !records[c.id]?.active);
-  if (cities.length) dock.innerHTML = `<div class="dock-info"><strong title="${e(cities.map(c=>c.name).join('、'))}">${city ? e(city.name) : '已选 ' + cities.length + ' 个城市'}</strong><span>${activeView==='all'?'完整视图 · 选择上方分类后可记录':city ? e(city.province) + ' · ' + (records[city.id]?.active ? '已点亮' : '未点亮') : pending.length + ' 个待点亮 · 再点城市可取消'}</span></div><button class="btn btn-primary" data-action="edit" ${activeView==='all'||!city && !pending.length ? 'disabled' : ''}>${activeView==='all'?'仅查看':city && records[city.id]?.active ? '编辑' : '点亮'}</button><button class="icon-btn" data-action="deselect" aria-label="清空已选城市">${icon('close')}</button>`;
-  if (!city) { panel.innerHTML = `<div class="invitation">${icon('spark','big-spark')}<h2>选择城市</h2><p>在地图上点选城市，<br>或通过名称、省份搜索。</p><button class="btn" data-action="search">搜索城市 ${icon('arrow')}</button></div>`; return; }
-  const record = records[city.id];
-  panel.innerHTML = `<div class="selected-card"><div class="place-meta"><span>${e(city.province)}</span><span class="place-status ${record?.active ? 'lit' : ''}">${record?.active ? '已点亮' : '未点亮'}</span></div><h2>${e(city.name)}</h2><p class="place-caption">${record?.active ? `${e(record.author)} 的标记` : '尚未添加标记。'}</p>${record?.active && record.note ? `<div class="place-note">${e(record.note)}</div>` : ''}<button class="btn btn-primary" data-action="edit">${icon(record?.active ? 'check' : 'spark')}${record?.active ? '编辑标记' : '点亮'}</button>${record?.active ? '<button class="card-link" data-action="remove">取消这座城市的点亮</button>' : ''}<button class="card-link" data-action="unselect">返回全国</button></div>`;
+  if (!cities.length) { dock.replaceChildren(); return; }
+  const city = cities.length === 1 ? cities[0] : null;
+  const full = activeView === 'all';
+  const pending = cities.filter(c => !records[c.id]?.active).length;
+  const active = city && records[city.id]?.active;
+  const title = city ? city.name : `已选 ${cities.length} 个城市`;
+  const label = full ? '完整视图' : PROFILES[activeView].short;
+  let subtitle = `${pending} 个待点亮`;
+  if (full) subtitle = city ? city.province : `${cities.length - pending} 个已点亮`;
+  else if (city) subtitle = active ? records[city.id].note || '已点亮' : '未点亮';
+  const action = full ? 'view-records' : 'edit';
+  const buttonText = full ? '查看记录' : active ? '编辑' : '点亮';
+  dock.innerHTML = `
+    <div class="dock-info"><strong>${e(title)}</strong><span>${label} · ${e(subtitle)}</span></div>
+    <button class="btn btn-primary" data-action="${action}" ${!full && !city && !pending ? 'disabled' : ''}>${buttonText}</button>
+    <button class="icon-btn" data-action="deselect" aria-label="清空已选城市">${icon('close')}</button>`;
 }
 async function sync(manual = false) {
   if (syncing || saving || demo || map?.interacting) return;
@@ -107,23 +121,36 @@ async function sync(manual = false) {
   try {
     const result = await getState();
     if (demo || saving || map?.interacting || epoch !== writeEpoch) return;
-    layers=cleanLayers(result.layers,result.records);
-    activityAll=result.activityAll || (result.activity || []).map(row=>({...row,profile:'together'}));
-    lastSync = Date.now(); connected = true;
-    cacheState();
-    render(); if (manual) toast('已同步最新数据');
-  } catch { connected = false; updateStatus(); if (manual) toast('暂时连接不上，请稍后重试'); }
+    const history = result.activityAll || result.activity.map(row => ({ ...row, profile: 'together' }));
+    const snapshot = JSON.stringify([result.layers || result.records, history]);
+    lastSync = Date.now();
+    connection = 'online';
+    if (snapshot !== lastRemoteState) {
+      layers = cleanLayers(result.layers, result.records);
+      activityAll = history;
+      lastRemoteState = snapshot;
+      cacheState();
+      render();
+    } else updateStatus();
+    if (manual) toast('已同步最新数据');
+  } catch {
+    if (demo || saving || epoch !== writeEpoch) return;
+    connection = 'offline'; updateStatus();
+    if (manual) toast('暂时连接不上，请稍后重试');
+  }
   finally { syncing = false; }
 }
 function selectCity(id, focus = false) {
   if (!cityById.has(id)) return;
-  if (!focus && selectedIds.has(id)) selectedIds.delete(id); else selectedIds.add(id);
+  const wasSelected = selectedIds.delete(id);
+  if (focus || !wasSelected) selectedIds.add(id);
   renderPanel(); updateMap();
   if (focus) map.focus(cityById.get(id));
-  if (focus && !matchMedia('(max-width: 760px)').matches) document.querySelector('#selection-dock [data-action="edit"]')?.focus({ preventScroll: true });
+  if (focus && !matchMedia('(max-width: 760px)').matches) document.querySelector('#selection-dock .btn-primary')?.focus({ preventScroll: true });
 }
 function closeModal(restoreFocus = true) {
   const hadModal = !!document.querySelector('.sheet');
+  refreshOpenSheet = null;
   modalCleanup?.(); modalCleanup = null;
   document.querySelector('#modal-root').innerHTML = '';
   if (lockedScroll !== null) {
@@ -167,24 +194,107 @@ function modal(title, content) {
 }
 function searchModal(initial = 'all') {
   if (!data) return toast('地图正在加载，请稍等');
-  const root = modal(initial === 'lit' ? '已点亮城市' : '搜索城市', `<div class="search-input-wrap">${icon('search')}<input id="city-search" type="search" placeholder="城市名 / 省份 / 行政区代码" aria-label="搜索城市" autocomplete="off"></div><div class="search-filters"><button class="chip ${initial === 'all' ? 'active' : ''}" data-filter="all">全部地区</button><button class="chip ${initial === 'lit' ? 'active' : ''}" data-filter="lit">已点亮</button><button class="chip" data-filter="unlit">未点亮</button></div><select class="province-select" aria-label="按省份筛选"><option value="">所有省份</option>${data.provinces.map(p => `<option value="${p.id}">${e(p.name)}</option>`).join('')}</select><div class="search-meta"></div><div class="search-results"></div>`);
+  const root = modal(initial === 'lit' ? '已点亮城市' : '搜索城市', `
+    <div class="search-input-wrap">${icon('search')}<input id="city-search" type="search" placeholder="搜城市、省份、代码或备注" aria-label="搜索城市或备注" autocomplete="off" enterkeyhint="search"></div>
+    <div class="search-options">
+      <div class="search-filters" role="group" aria-label="点亮状态">
+        <button class="chip" data-filter="all">全部</button><button class="chip" data-filter="lit">已点亮</button><button class="chip" data-filter="unlit">未点亮</button>
+      </div>
+      <select class="province-select" aria-label="按省份筛选"><option value="">所有省份</option>${data.provinces.map(p => `<option value="${p.id}">${e(p.name)}</option>`).join('')}</select>
+    </div>
+    <div class="search-meta" role="status"></div>
+    <div class="search-results"><div class="search-rows"></div><button class="more-results" hidden>显示更多地区</button></div>`);
   let filter = initial;
+  const input = root.querySelector('#city-search');
+  const province = root.querySelector('select');
+  const results = root.querySelector('.search-results');
+  const rows = results.querySelector('.search-rows');
+  const more = results.querySelector('.more-results');
+  const filters = root.querySelectorAll('[data-filter]');
+  const pageSize = 32;
+  let found = [], shown = 0;
   root.querySelector('.sheet').classList.add('search-sheet');
-  function list() {
-    const q = root.querySelector('input').value.trim().toLowerCase();
-    const province = root.querySelector('select').value;
-    const filtered = data.cities.filter(c => (!province || c.provinceId === province) && (!q || `${c.name}${c.province}${c.id}`.toLowerCase().includes(q)) && (filter === 'all' || (filter === 'lit' ? records[c.id]?.active : !records[c.id]?.active)));
-    root.querySelector('.search-meta').textContent = `${filtered.length} 个地区 · 点选查看与点亮`;
-    root.querySelector('.search-results').innerHTML = filtered.length ? filtered.map(c => `<button class="city-row" data-pick="${c.id}"><span><strong>${e(c.name)}</strong><small>${e(c.province)}</small></span><span class="row-right">${records[c.id]?.active ? '<span class="lit-tag">已点亮</span>' : ''}${icon('chevron')}</span></button>`).join('') : '<div class="no-results">还没有符合条件的城市。<br><br>试试其他名字，或清除筛选。</div>';
+  function appendRows(count) {
+    const next = found.slice(shown, shown + count);
+    rows.insertAdjacentHTML('beforeend', next.map(({city, entries, preview}) => {
+      const note = preview ? `<span class="result-note">${e(PROFILES[preview.profile].short)} · ${e(preview.record.note)}</span>` : '';
+      return `<button class="city-row" data-pick="${city.id}">
+        <span class="result-copy"><strong>${e(city.name)}</strong><small>${e(city.province)}</small>${note}</span>
+        <span class="row-right">${entries.length ? '<span class="lit-tag">已点亮</span>' : ''}${icon('chevron')}</span></button>`;
+    }).join(''));
+    shown += next.length;
+    more.hidden = shown >= found.length;
   }
-  root.querySelector('input').oninput = list; root.querySelector('select').onchange = list;
-  root.querySelectorAll('[data-filter]').forEach(b => b.onclick = () => { filter = b.dataset.filter; root.querySelectorAll('[data-filter]').forEach(x => x.classList.toggle('active',x===b)); list(); });
-  root.querySelector('.search-results').onclick = event => { const target=event.target.closest('[data-pick]'); if(target){const id=target.dataset.pick;closeModal(false);selectCity(id,true);scrollToMap();}};
+  function list(resetScroll = false) {
+    found = findCities(data.cities, layers, activeView, { query: input.value, province: province.value, filter });
+    filters.forEach(button => button.setAttribute('aria-pressed', String(button.dataset.filter === filter)));
+    root.querySelector('.search-meta').textContent = `${activeView === 'all' ? '完整视图' : PROFILES[activeView].short} · ${found.length} 个地区`;
+    const scrollTop = resetScroll ? 0 : results.scrollTop;
+    const focusedId = document.activeElement?.dataset.pick;
+    const count = resetScroll ? pageSize : Math.max(shown, pageSize);
+    rows.replaceChildren();
+    shown = 0;
+    if (found.length) {
+      appendRows(count);
+    } else {
+      const narrowed = input.value.trim() || province.value;
+      const message = !narrowed && filter === 'lit' ? '这个视图还没有点亮城市' : '没有找到符合条件的城市';
+      more.hidden = true;
+      rows.innerHTML = `<div class="no-results">${message}${narrowed ? '<button class="btn" data-clear-search>清除搜索和省份筛选</button>' : ''}</div>`;
+    }
+    results.scrollTop = scrollTop;
+    if (focusedId) results.querySelector(`[data-pick="${focusedId}"]`)?.focus({ preventScroll: true });
+  }
+  results.addEventListener('scroll', () => {
+    if (!more.hidden && results.scrollTop + results.clientHeight >= results.scrollHeight - 160) appendRows(pageSize);
+  }, { passive: true });
+  more.onclick = () => {
+    const firstNew = shown;
+    appendRows(pageSize);
+    rows.children[firstNew]?.focus({ preventScroll: true });
+  };
+  input.oninput = province.onchange = () => list(true);
+  filters.forEach(button => button.onclick = () => { filter = button.dataset.filter; list(true); });
+  results.onclick = event => {
+    if (event.target.closest('[data-clear-search]')) {
+      input.value = ''; province.value = ''; list(true); return;
+    }
+    const row = event.target.closest('[data-pick]');
+    if (row) { closeModal(false); selectCity(row.dataset.pick, true); scrollToMap(); }
+  };
+  input.onkeydown = event => {
+    if (event.key !== 'Enter' || event.isComposing || event.keyCode === 229) return;
+    if (found.length === 1) { event.preventDefault(); rows.firstElementChild.click(); }
+  };
+  refreshOpenSheet = list;
   list();
-  root.querySelector('input').focus({ preventScroll: true });
+  if (initial === 'all') input.focus({ preventScroll: true });
+}
+
+function recordsModal() {
+  if (activeView !== 'all' || !selectedIds.size) return;
+  const cities = [...selectedIds].map(id => cityById.get(id));
+  const single = cities.length === 1;
+  const root = modal(single ? cities[0].name : `${cities.length} 个城市的记录`, '<div class="record-list"></div>');
+  function showRecords() {
+    root.querySelector('.record-list').innerHTML = cities.map(city => {
+      const entries = visibleEntries(layers, city.id, 'all');
+      const details = entries.map(({ profile, record }) => `
+        <div class="record-entry">
+          <div class="record-byline"><b style="--tag:${PROFILES[profile].color}">${PROFILES[profile].short}</b><span>${e(record.author)}</span></div>
+          ${record.note ? `<p>${e(record.note)}</p>` : ''}
+        </div>`).join('');
+      return `<section class="record-city">
+        ${single ? '' : `<h3>${e(city.name)}</h3>`}<small>${e(city.province)}</small>
+        ${entries.length ? details : '<p class="record-empty">暂无点亮记录</p>'}</section>`;
+    }).join('');
+  }
+  refreshOpenSheet = showRecords;
+  showRecords();
 }
 async function mutate(id, values, expectedVersion, operationId) {
   writeEpoch++;
+  lastRemoteState = null;
   const profile=activeView;
   if (demo) {
     const record = { ...values, version:expectedVersion+1, updatedAt:new Date().toISOString() };
@@ -194,12 +304,13 @@ async function mutate(id, values, expectedVersion, operationId) {
   const result = await saveCity(id,{...values, expectedVersion, operationId},profile);
   layers[profile][id] = normalizeRecord(result.current || result.record);
   activityAll = [ {profile,cityId:id, operationId, ...result.record}, ...activityAll.filter(a=>a.operationId!==operationId) ].slice(0,150);
-  connected = true; lastSync = Date.now();
+  connection = 'online'; lastSync = Date.now();
   cacheState(); render();
   return normalizeRecord(result.record);
 }
 async function mutateBatch(updates) {
   writeEpoch++;
+  lastRemoteState = null;
   const profile=activeView;
   let result;
   if (demo) {
@@ -211,7 +322,7 @@ async function mutateBatch(updates) {
   for (const [id,row] of Object.entries(latest)) layers[profile][id] = normalizeRecord(row);
   const operations = new Set(updates.map(row => row.operationId));
   activityAll = [...updates.map(row => ({profile,cityId:row.id,operationId:row.operationId,...result.records[row.id]})), ...activityAll.filter(row => !operations.has(row.operationId))].sort((a,b) => b.updatedAt.localeCompare(a.updatedAt)).slice(0,150);
-  if (!demo) { connected = true; lastSync = Date.now(); cacheState(); }
+  if (!demo) { connection = 'online'; lastSync = Date.now(); cacheState(); }
   render();
   return result.records;
 }
@@ -295,7 +406,7 @@ async function exportModal() {
   if (!map || !data) { toast('地图加载完成后即可导出'); return; }
   map.prepareExport();
   const stats = summarize(records, data.cities);
-  const snapshot = createMapSnapshot(document.querySelector('.map-card'), { ...stats, total: data.cities.length }, { demo, offline: !connected && !demo, view:activeView });
+  const snapshot = createMapSnapshot(document.querySelector('.map-card'), { ...stats, total: data.cities.length }, { demo, offline: connection !== 'online' && !demo, view:activeView });
   const svgUrl = URL.createObjectURL(createMapSvgBlob(snapshot));
   const root = modal('导出地图图片', `<div class="export-content"><div class="export-preview"><img src="${svgUrl}" alt="地图矢量预览" width="${snapshot.pixelWidth}" height="${snapshot.pixelHeight}"></div><div class="export-meta"><span data-export-format>正在生成高清 PNG…</span><span>当前视图</span></div><div class="export-downloads"><button class="btn btn-primary" data-save-png disabled>${icon('download')}高清 PNG</button><button class="btn" data-save-svg>${icon('download')}矢量 SVG</button></div><p class="export-help">SVG 可无损放大，适合打印；PNG 可保存到相册。</p><p class="form-error" data-export-error role="alert" hidden></p><button class="btn" data-retry-export hidden>重试 PNG</button></div>`);
   const sheet = root.querySelector('.sheet');
@@ -356,7 +467,7 @@ function shareModal() {
   };
 }
 function aboutModal() {
-  const root=modal('使用说明',`<div class="note-title">${icon('spark')}操作说明</div><p>点选或搜索城市，添加标记和备注。所有访客共用一张地图，保存后可撤销。</p><p>省界使用较粗的线，市界使用较细的线。手机支持双指缩放与拖动，也可以用地图左下角的按钮。</p><div class="about-grid"><button class="btn" data-export>${icon('download')}导出数据备份</button><button class="btn" data-reload>${icon('refresh')}立即同步</button></div><div class="demo-control"><p>示例数据仅用于体验，不会上传。</p><button data-show-demo>${demo?'退出示例':'查看示例'}</button></div><p class="data-note">行政区边界来自 <a href="https://datav.aliyun.com/portal/school/atlas/area_selector" target="_blank" rel="noopener noreferrer">阿里云 DataV.GeoAtlas</a>。当前共 34 个省级区域、${data?.cities.length || 370} 个点亮单元，包括地级市、自治州、地区、盟、直辖市及省直管县级单位。港澳及台湾当前按整体点亮，台湾暂未细分市县。数据为下载时的可用版本，不保证覆盖最新行政调整；本工具用于足迹记录。</p><p class="data-note">页面与源代码托管在 GitHub，标记保存在云端。断网时展示本机缓存，恢复连接后再编辑。<a href="https://github.com/biantai11523/light-up-china" target="_blank" rel="noopener noreferrer">查看项目源代码 ↗</a></p>`);
+  const root=modal('使用说明',`<p>点选城市后可继续多选，再按「点亮」一起保存。再次点当前分类可看完整地图，在「查看记录」里阅读各自的备注。</p><p>省界较粗，市界较细。双指或地图下方的按钮可缩放地图。</p><div class="about-grid"><button class="btn" data-export>${icon('download')}导出数据备份</button><button class="btn" data-reload>${icon('refresh')}立即同步</button></div><div class="demo-control"><p>示例数据仅用于体验，不会上传。</p><button data-show-demo>${demo?'退出示例':'查看示例'}</button></div><p class="data-note">行政区边界来自 <a href="https://datav.aliyun.com/portal/school/atlas/area_selector" target="_blank" rel="noopener noreferrer">阿里云 DataV.GeoAtlas</a>。当前共 34 个省级区域、${data?.cities.length || 370} 个点亮单元，包括地级市、自治州、地区、盟、直辖市及省直管县级单位。港澳及台湾当前按整体点亮，台湾暂未细分市县。数据为下载时的可用版本，不保证覆盖最新行政调整；本工具用于足迹记录。</p><p class="data-note">页面与源代码托管在 GitHub，标记保存在云端。断网时展示本机缓存，恢复连接后再编辑。<a href="https://github.com/biantai11523/light-up-china" target="_blank" rel="noopener noreferrer">查看项目源代码 ↗</a></p>`);
   root.querySelector('[data-export]').onclick=()=>{
     const blob=new Blob([JSON.stringify({app:'点亮',view:activeView,layers,activityAll,exportedAt:new Date().toISOString(),demo,records:Object.fromEntries(Object.entries(records).map(([id,r])=>[id,{...r,name:cityById.get(id)?.name,province:cityById.get(id)?.province}])),activity},null,2)],{type:'application/json'});
     const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download=`点亮地图-${demo?'示例-':''}${today()}.json`;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);toast('数据备份已导出');
@@ -367,6 +478,7 @@ function aboutModal() {
 async function toggleDemo() {
   if(!data || saving)return;
   demo=!demo;selectedIds.clear();
+  lastRemoteState = null;
   writeEpoch++;
   document.querySelector('#demo-banner').innerHTML=demo?'<div class="demo-banner"><span>示例地图 · 仅供体验，不影响共享数据</span><button data-action="demo">退出示例</button></div>':'';
   if(demo){
@@ -381,13 +493,13 @@ document.addEventListener('click',event=>{
   const view=event.target.closest('[data-view]');if(view){switchView(view.dataset.view);return;}
   const city=event.target.closest('[data-select]');if(city){selectCity(city.dataset.select,true);scrollToMap();return;}
   const button=event.target.closest('[data-action]');if(!button)return;
-  const actions={'export-map':exportModal,deselect:()=>{selectedIds.clear();render();},search:()=>searchModal(),activity:()=>searchModal('lit'),share:shareModal,about:aboutModal,refresh:()=>sync(true),edit:()=>editCity(),remove:()=>editCity(true),demo:toggleDemo,unselect:()=>{selectedIds.clear();render();map.reset();},home:()=>{closeModal();window.scrollTo({top:0,behavior:scrollBehavior()});}};
+  const actions={'export-map':exportModal,'view-records':recordsModal,deselect:()=>{selectedIds.clear();render();},search:()=>searchModal(),activity:()=>searchModal('lit'),share:shareModal,about:aboutModal,refresh:()=>sync(true),edit:()=>editCity(),demo:toggleDemo,home:()=>{closeModal();window.scrollTo({top:0,behavior:scrollBehavior()});}};
   actions[button.dataset.action]?.();
 });
 document.addEventListener('keydown',event=>{if(event.key==='/'&&!document.querySelector('.sheet')&&!/INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName)){event.preventDefault();searchModal();}});
 window.addEventListener('online',()=>sync());
 document.addEventListener('visibilitychange',()=>{if(!document.hidden)sync();});
-window.addEventListener('offline',()=>{connected=false;updateStatus();});
+window.addEventListener('offline',()=>{connection='offline';updateStatus();});
 async function boot(){
   try{
     const response=await fetch(`${import.meta.env.BASE_URL}data/china.json`);if(!response.ok)throw new Error('map');data=await response.json();data.cities.forEach(c=>cityById.set(c.id,c));map=createMap(document.querySelector('.map-card'),data,id=>selectCity(id));render();await sync();

@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { fixture,input } from './helpers.mjs';
 import { recordsForView,cityAppearance,cleanLayers } from '../src/profiles.js';
-import { openApp,until } from './ui-harness.mjs';
+import { openApp,until,typeQuery } from './ui-harness.mjs';
 import { createMapSnapshot } from '../src/export.js';
 const write=(f,token,profile,id,body)=>f.request(`/api/profiles/${profile}/cities/${id}`,{method:'PUT',headers:{Authorization:`Bearer ${token}`},body:JSON.stringify(body)});
 const batch=(f,token,profile,updates)=>f.request(`/api/profiles/${profile}/cities/batch`,{method:'POST',headers:{Authorization:`Bearer ${token}`},body:JSON.stringify({updates})});
@@ -62,8 +62,9 @@ test('three buttons highlight their category; clicking the current one gives a r
     d.querySelector('[data-view="xuan"]').click();assert.equal(d.querySelector('#stat-count').textContent,'04');assert.match(d.querySelector('#view-status').textContent,/完整视图/);
     assert.equal(d.querySelectorAll('[data-view][aria-pressed="true"]').length,0);
     assert.equal(d.querySelector('.map-svg [data-city="320100"]').dataset.profileCategory,'both');
-    tap(w,'330200');assert.equal(d.querySelector('#selection-dock [data-action="edit"]').disabled,true);
-    d.querySelector('#selection-dock [data-action="edit"]').click();assert.equal(d.querySelector('#visit-form'),null);
+    tap(w,'330200');assert.equal(d.querySelector('#selection-dock [data-action="edit"]'),null);
+    d.querySelector('[data-action="view-records"]').click();assert.equal(d.querySelector('#visit-form'),null);
+    assert.match(d.querySelector('.record-list').textContent,/暂无点亮记录/);
     const snapshot=createMapSnapshot(d.querySelector('.map-card'),{count:4,total:370,provinces:4},{view:'all'});
     assert.match(snapshot.svg,/完整视图/);assert.match(snapshot.svg,/url\(#personal-both\)/);assert.match(snapshot.svg,/#9ed9c5/);assert.match(snapshot.svg,/#bccdf3/);
     assert.match(snapshot.svgFilename,/完整/);
@@ -81,4 +82,40 @@ test('a personal note on an inherited joint city can be saved and undone without
     state=(await(await f.request('/api/state')).json());assert.equal(state.layers.xuan['330100'].active,false);assert.equal(state.layers.xuan['330100'].note,'');assert.equal(recordsForView(state.layers,'xuan')['330100'].active,true);
     assert.equal(state.records['330100'].note,'共同备注');
   }finally{await w.happyDOM.abort();f.db.close();}
+});
+
+test('search and the read-only city sheet show the right notes across profiles, including external updates', async () => {
+  const f = fixture(), token = await f.session();
+  await f.write(token, '330100', input({note: '西湖'}));
+  await write(f, token, 'xuan', '330100', input({note: '灵隐寺'}));
+  await write(f, token, 'xi', '330100', input({note: '南宋御街 <街景>'}));
+  await write(f, token, 'xi', '330200', input({active: false, note: '南宋御街'}));
+  const w = await openApp(f), d = w.document;
+  try {
+    d.querySelector('.search-trigger').click();
+    typeQuery(w, '南宋');
+    assert.equal(d.querySelector('[data-pick]'), null, 'personal notes do not leak into joint search');
+    d.querySelector('[data-close]').click();
+    d.querySelector('[data-view="together"]').click();
+    d.querySelector('[data-action="activity"]').click();
+    assert.notEqual(d.activeElement.id, 'city-search', 'browsing lit cities should not bring up the phone keyboard');
+    typeQuery(w, '浙江 南宋');
+    assert.deepEqual([...d.querySelectorAll('[data-pick]')].map(n => n.dataset.pick), ['330100']);
+    assert.match(d.querySelector('.result-note').textContent, /曦宝 · 南宋御街 <街景>/);
+    d.querySelector('[data-pick]').click();
+    d.querySelector('[data-action="view-records"]').click();
+    assert.deepEqual([...d.querySelectorAll('.record-entry p')].map(n => n.textContent), ['西湖','灵隐寺','南宋御街 <街景>']);
+    assert.equal(d.querySelector('[data-save], #visit-form'), null);
+    await write(f, token, 'xuan', '330100', input({note: '灵隐寺和飞来峰', expectedVersion: 1}));
+    w.dispatchEvent(new w.Event('online'));
+    await until(() => d.querySelector('.record-list').textContent.includes('飞来峰'));
+    d.querySelector('[data-close]').click();
+    tap(w, '330200');
+    d.querySelector('[data-view="xi"]').click();
+    assert.equal(d.querySelectorAll('.map-svg .is-selected').length, 2);
+    d.querySelector('#selection-dock [data-action="edit"]').click();
+    assert.match(d.querySelector('#dialog-title').textContent, /点亮 1 个城市/);
+    const state = await (await f.request('/api/state')).json();
+    assert.equal(state.layers.xi['330200'].active, false);
+  } finally { await w.happyDOM.abort(); f.db.close(); }
 });

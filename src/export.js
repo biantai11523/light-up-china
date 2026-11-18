@@ -34,9 +34,9 @@ export function standaloneMap(svg, { width, height }) {
     const city = el.classList.contains('map-city-label');
     const labelGroup = el.parentElement;
     attributes(el, { 'font-family': FONT,
-      'font-size': city ? (labelGroup.getAttribute('font-size') || 8) : 10,
+      'font-size': labelGroup.getAttribute('font-size') || (city ? 8 : 10),
       'font-weight': city ? 500 : 600, fill: city ? '#30392b' : '#4c5348',
-      stroke: COLORS.unlit, 'stroke-width': city ? (labelGroup.getAttribute('stroke-width') || 1.3) : 2,
+      stroke: COLORS.unlit, 'stroke-width': labelGroup.getAttribute('stroke-width') || 2,
       'text-anchor': 'middle', 'paint-order': 'stroke', 'stroke-linejoin': 'round' });
   });
   // Bake non-scaling strokes into user units. This keeps borders the same width

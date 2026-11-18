@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { fixture,input } from './helpers.mjs';
-import { openApp,until } from './ui-harness.mjs';
+import { openApp,until,searchAndSelect } from './ui-harness.mjs';
 function tap(w,id){w.document.querySelector(`.map-svg [data-city="${id}"]`).dispatchEvent(new w.MouseEvent('click',{bubbles:true}));}
 function submit(w){w.document.querySelector('#visit-form').dispatchEvent(new w.Event('submit',{bubbles:true,cancelable:true}));}
 test('direct map taps toggle multiple cities and use the original light button and form',async()=>{
@@ -30,7 +30,7 @@ test('search adds a city without clearing map selections or toggling it off on a
   const f=fixture(),w=await openApp(f),d=w.document;
   try{
     tap(w,'330100');
-    for(let i=0;i<2;i++){d.querySelector('[data-action="search"]').click();d.querySelector('[data-pick="510100"]').click();}
+    for(let i=0;i<2;i++)searchAndSelect(w,'510100');
     assert.equal(d.querySelectorAll('.map-svg .city-shape.is-selected').length,2);
     assert.ok(d.querySelector('.map-svg [data-city="330100"]').classList.contains('is-selected'));
     tap(w,'510100');assert.match(d.querySelector('#selection-dock').textContent,/杭州市/);
@@ -53,13 +53,32 @@ test('mixed selections skip lit cities and a conflicting save preserves everyone
   }finally{await w.happyDOM.abort();f.db.close();}
 });
 test('lost-response retry preserves direct selections and reuses operation IDs',async()=>{
-  const f=fixture();const sent=[];let loseResponse=true;
-  const w=await openApp(f,{configure(w){const fetch=w.fetch;w.fetch=async(url,options)=>{const response=await fetch(url,options);if(String(url).endsWith('/api/cities/batch')){sent.push(JSON.parse(options.body));if(loseResponse){loseResponse=false;throw new TypeError('连接中断');}}return response;};}}),d=w.document;
+  const f=fixture();const sent=[];
+  const w=await openApp(f,{configure(w){
+    const fetch=w.fetch;
+    w.fetch=async(url,options)=>{
+      const response=await fetch(url,options);
+      if(String(url).endsWith('/api/cities/batch')){
+        sent.push(JSON.parse(options.body));
+        if(sent.length===1)throw new TypeError('连接中断');
+        if(sent.length===2){
+          const result=await response.json();
+          delete result.records['330200'];
+          return Response.json(result);
+        }
+      }
+      return response;
+    };
+  }}),d=w.document;
   try{
     tap(w,'330100');tap(w,'330200');d.querySelector('#selection-dock [data-action="edit"]').click();d.querySelector('[name="note"]').value='保留内容';submit(w);
     await until(()=>d.querySelector('.form-error')?.textContent.includes('可重试'));assert.equal(d.querySelector('[name="note"]').value,'保留内容');
     assert.equal(d.querySelectorAll('.map-svg .city-shape.is-selected').length,2);
-    submit(w);await until(()=>d.querySelector('#stat-count').textContent==='02');assert.deepEqual(sent[0],sent[1]);assert.equal((await(await f.request('/api/state')).json()).activity.length,2);
+    submit(w);await until(()=>d.querySelector('.form-error')?.textContent.includes('未收到全部城市'));
+    assert.equal(d.querySelector('#stat-count').textContent,'00');
+    submit(w);await until(()=>d.querySelector('#stat-count').textContent==='02');
+    assert.deepEqual(sent[0],sent[1]);assert.deepEqual(sent[1],sent[2]);
+    assert.equal((await(await f.request('/api/state')).json()).activity.length,2);
   }finally{await w.happyDOM.abort();f.db.close();}
 });
 test('single-city editing still preserves a hidden historical date',async()=>{

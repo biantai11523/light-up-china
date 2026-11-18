@@ -4,7 +4,7 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import { Resvg } from '@resvg/resvg-js';
 import { createMapSnapshot, createMapSvgBlob, exportDimensions } from '../src/export.js';
 import { fixture } from './helpers.mjs';
-import { openApp, until } from './ui-harness.mjs';
+import { openApp, until, searchAndSelect, enterDemo } from './ui-harness.mjs';
 
 function measureMap(document,width=390,height=456){
   document.querySelector('.map-stage').getBoundingClientRect=()=>({width,height,left:0,top:200});
@@ -15,7 +15,7 @@ const meta={count:18,provinces:14,total:370};
 test('current-view export keeps zoom, selections, borders and inset, and rasterizes into a valid PNG',async()=>{
   const f=fixture(),w=await openApp(f),d=w.document;
   try{
-    measureMap(d);d.querySelector('[data-action="demo"]').click();
+    measureMap(d);enterDemo(d);
     const card=d.querySelector('.map-card');
     const nationwide=createMapSnapshot(card,meta,{demo:true,date:new Date('2026-11-16T12:00:00Z')});
     assert.equal(nationwide.pixelWidth,2636);assert.equal(nationwide.pixelHeight,4096);assert.match(nationwide.svg,/示例/);
@@ -31,7 +31,7 @@ test('current-view export keeps zoom, selections, borders and inset, and rasteri
     assert.equal((vector.match(/data-city=/g)||[]).length,card.querySelectorAll('[data-city]').length);
     await mkdir('artifacts',{recursive:true});await writeFile('artifacts/export-mobile.png',png);
     await writeFile('artifacts/export-vector.svg',vector);
-    d.querySelector('[data-action="search"]').click();d.querySelector('[data-pick="330100"]').click();
+    searchAndSelect(w,'330100');
     const transform=d.querySelector('.map-svg>g').getAttribute('transform');
     const zoomed=createMapSnapshot(card,meta,{demo:true});
     assert.ok(zoomed.svg.includes(`transform="${transform}"`));assert.match(zoomed.svg,/fill="#ff976f"/);assert.match(zoomed.svg,/杭州市/);

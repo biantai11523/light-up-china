@@ -1,18 +1,21 @@
 import { select } from 'd3-selection';
 import { zoom, zoomIdentity } from 'd3-zoom';
+import 'd3-transition';
 import { escapeHtml } from './store.js';
 import { frameUpdates, simplifyMapPath } from './motion.js';
 import { PROFILE_PATTERNS } from './profiles.js';
+import { labelPixels, MAP_BOX, mapViewport, placeLabels } from './labels.js';
 
 const NS = 'http://www.w3.org/2000/svg';
 const shortProvince = name => name.replace(/壮族自治区|回族自治区|维吾尔自治区|自治区|特别行政区|省|市/g, '');
 export function createMap(container, data, onSelect) {
   const svg = container.querySelector('.map-svg');
-  svg.setAttribute('viewBox', '110 25 720 610');
+  const { x, y, width, height } = MAP_BOX;
+  svg.setAttribute('viewBox', [x, y, width, height].join(' '));
   const defs=document.createElementNS(NS,'defs');defs.innerHTML=PROFILE_PATTERNS;svg.append(defs);
   const group = document.createElementNS(NS, 'g');
   svg.append(group);
-  group.innerHTML = `<g class="cities">${data.cities.map(c => `<path class="city-shape" data-city="${c.id}" d="${c.path}" aria-label="${escapeHtml(c.name)}"><title>${escapeHtml(c.name)}</title></path>`).join('')}</g><g>${data.provinces.map(p => `<path class="province-shape" d="${p.path}"/>`).join('')}</g><g>${data.decorations.map(d => `<path class="map-decoration" d="${d}"/>`).join('')}</g><g class="province-labels">${data.provinces.filter(p => !['810000','820000'].includes(p.id)).map(p => `<text class="province-label" x="${p.center[0]}" y="${p.id === '460000' ? 599 : p.center[1]}">${shortProvince(p.name)}</text>`).join('')}</g><g class="city-labels"></g>`;
+  group.innerHTML = `<g class="cities">${data.cities.map(c => `<path class="city-shape" data-city="${c.id}" d="${c.path}" aria-label="${escapeHtml(c.name)}"><title>${escapeHtml(c.name)}</title></path>`).join('')}</g><g>${data.provinces.map(p => `<path class="province-shape" d="${p.path}"/>`).join('')}</g><g>${data.decorations.map(d => `<path class="map-decoration" d="${d}"/>`).join('')}</g><g class="province-labels"></g><g class="city-labels"></g>`;
   const inset = container.querySelector('.sea-inset svg');
   inset.setAttribute('viewBox', '552 535 166 340');
   inset.innerHTML = `<g>${data.cities.filter(c => ['460000','440000','810000','820000'].includes(c.provinceId)).map(c => `<path class="city-shape" data-city="${c.id}" d="${c.path}"/>`).join('')}${data.decorations.map(d => `<path class="map-decoration" d="${d}"/>`).join('')}</g>`;
@@ -24,23 +27,27 @@ export function createMap(container, data, onSelect) {
   const motionPaths = [...group.querySelectorAll('.city-shape,.province-shape')].map(node => ({node,full:node.getAttribute('d'),coarse:null,fine:null}));
   let selected = new Set(), lit = new Set(), transform = zoomIdentity;
   const paintKeys=new Map();
-  let labelKey = '', labelsDirty = true, activeGesture = false, moving = false, motionTier = 'full', screenScale = 1;
+  let labelsDirty = true, activeGesture = false, moving = false, motionTier = 'full';
+  let viewport = mapViewport(width, height);
   let suppressClickUntil = 0, gestureMoved = false, pointerStart = null;
   const pointers = new Map();
   const provinceLabels = group.querySelector('.province-labels');
   const cityLabels = group.querySelector('.city-labels');
+  const provinces = data.provinces.map(p => ({
+    id: p.id, type: 'province', name: shortProvince(p.name), center: p.center
+  }));
+  const cities = new Map(data.cities.filter(c => c.id !== '460300').map(c => {
+    const [[x0, y0], [x1, y1]] = c.bounds;
+    return [c.id, { id: c.id, type: 'city', name: c.name, center: c.center, span: Math.sqrt((x1-x0)*(y1-y0)) }];
+  }));
   const plus = container.querySelector('[data-map="plus"]');
   const minus = container.querySelector('[data-map="minus"]');
-  let paintedScale = 1;
+  let labelTransform = zoomIdentity, buttonTarget = null;
   const frames = frameUpdates(next => {
     group.setAttribute('transform',next.toString());
-    if (moving && next.k !== paintedScale) {
-      provinceLabels.style.display = next.k > 2.3 ? 'none' : '';
-      cityLabels.setAttribute('font-size',String(Math.max(1.2,11/next.k)));
-      cityLabels.setAttribute('stroke-width',String(1.8/next.k));
-    }
-    paintedScale = next.k;
-    if (!moving) drawLabels();
+    const farPan = Math.abs(next.x - labelTransform.x) * viewport.scale > viewport.width * .4
+      || Math.abs(next.y - labelTransform.y) * viewport.scale > viewport.height * .4;
+    if (!moving || next.k !== labelTransform.k || farPan) drawLabels();
   });
 
   // Prepare lightweight paths in small idle chunks, never during a gesture.
@@ -70,7 +77,7 @@ export function createMap(container, data, onSelect) {
   function beginMotion() {
     const started = !moving;
     if (started) { moving = true; svg.classList.add('is-moving'); }
-    const effectiveScale = screenScale * transform.k;
+    const effectiveScale = viewport.scale * transform.k;
     const tier = effectiveScale <= 3 ? 'coarse' : effectiveScale <= 12 ? 'fine' : 'full';
     const rank = {coarse:0,fine:1,full:2};
     if (started || rank[tier] > rank[motionTier]) detail(tier);
@@ -102,21 +109,20 @@ export function createMap(container, data, onSelect) {
     if (city && !event.defaultPrevented && Date.now() >= suppressClickUntil) onSelect(city.dataset.city);
   }
   svg.addEventListener('click',click); inset.addEventListener('click',click);
-  const zoomer = zoom().scaleExtent([1,12]).translateExtent([[40,-30],[930,720]]).extent([[110,25],[830,635]]).clickDistance(7)
+  const zoomer = zoom().scaleExtent([1,12]).translateExtent([[40,-30],[930,720]]).extent([[x,y],[x+width,y+height]]).clickDistance(7)
     .on('start',event => {
+      measureViewport();
       if (!event.sourceEvent) return;
       activeGesture = true;
-      const rect = svg.getBoundingClientRect();
-      screenScale = rect.width && rect.height ? Math.min(rect.width/720,rect.height/610) : 1;
       if (event.sourceEvent.type === 'mousedown') pointerStart = [event.sourceEvent.clientX,event.sourceEvent.clientY];
     })
     .on('zoom',event => {
       const scaleChanged = event.transform.k !== transform.k;
       transform = event.transform;
-      if (scaleChanged) labelsDirty = true;
+      labelsDirty = true;
       const source = event.sourceEvent;
       if (source?.type === 'mousemove' && pointerStart && Math.hypot(source.clientX-pointerStart[0],source.clientY-pointerStart[1]) > 7) gestureMoved = true;
-      if (source && (gestureMoved || scaleChanged || moving)) beginMotion();
+      if (buttonTarget !== null || source && (gestureMoved || scaleChanged || moving)) beginMotion();
       frames.queue(transform);
       if (!source) frames.flush();
     })
@@ -125,27 +131,79 @@ export function createMap(container, data, onSelect) {
       finishMotion();
     });
   select(svg).call(zoomer).on('dblclick.zoom',null);
+  function measureViewport() {
+    const rect = svg.getBoundingClientRect();
+    if (!rect.width || !rect.height || (rect.width === viewport.width && rect.height === viewport.height)) return;
+    viewport = mapViewport(rect.width, rect.height);
+    labelsDirty = true;
+  }
+  function resized() {
+    measureViewport();
+    if (!moving) drawLabels();
+  }
+  function showLabels(node, labels, className, type) {
+    const key = labels.map(label => label.id).join(',');
+    if (key !== (node.dataset.labels || '')) {
+      node.dataset.labels = key;
+      select(node).selectAll('text').data(labels, label => label.id).join(enter => enter.append('text')
+        .attr('class', className).attr('x', label => label.center[0]).attr('y', label => label.center[1])
+        .text(label => label.name));
+    }
+    if (!labels.length) return;
+    const scale = viewport.scale * transform.k;
+    const size = (labelPixels(type, transform.k) / scale).toFixed(4);
+    if (node.getAttribute('font-size') !== size) {
+      node.setAttribute('font-size', size);
+      node.setAttribute('stroke-width', (2 / scale).toFixed(4));
+    }
+  }
   function drawLabels() {
     if (!labelsDirty) return;
     labelsDirty = false;
+    labelTransform = transform;
     const k = transform.k;
-    provinceLabels.style.display = k > 2.3 ? 'none' : '';
-    const selectedLabels = new Set([...selected].slice(-8));
-    const shown = data.cities.filter(c => c.id !== '460300' && (selectedLabels.has(c.id) || (k > 2.3 && lit.has(c.id)) || k > 4.5));
-    const key = shown.map(c=>c.id).join(',');
-    if (key !== labelKey) {
-      labelKey = key;
-      cityLabels.innerHTML = shown.map(c=>`<text class="map-city-label" x="${c.center[0]}" y="${c.center[1]}">${escapeHtml(c.name)}</text>`).join('');
+    const candidates = [...selected].reverse().map(id => cities.get(id)).filter(Boolean);
+    const provinceOpacity = Math.max(0, Math.min(1, (3 - k) / .9));
+    if (k > 1.35) {
+      for (const id of lit) if (!selected.has(id) && cities.has(id)) candidates.push(cities.get(id));
     }
-    cityLabels.setAttribute('font-size',String(Math.max(1.2,11/k)));
-    cityLabels.setAttribute('stroke-width',String(1.8/k));
+    if (provinceOpacity > 0) candidates.push(...provinces);
+    if (k > 1.6) {
+      const minimumSpan = labelPixels('city', k) * Math.max(0, 4.5 - k);
+      for (const city of cities.values()) {
+        if (!selected.has(city.id) && !lit.has(city.id) && city.span * viewport.scale * k >= minimumSpan) candidates.push(city);
+      }
+    }
+    const placed = placeLabels(candidates, viewport, transform);
+    provinceLabels.setAttribute('opacity', String(provinceOpacity));
+    showLabels(provinceLabels, placed.province, 'province-label', 'province');
+    showLabels(cityLabels, placed.city, 'map-city-label', 'city');
     plus.disabled = k >= 12; minus.disabled = k <= 1;
   }
   function reset() { select(svg).call(zoomer.transform,zoomIdentity); }
-  plus.onclick = () => select(svg).call(zoomer.scaleBy,1.6);
-  minus.onclick = () => select(svg).call(zoomer.scaleBy,1/1.6);
-  container.querySelector('[data-map="reset"]').onclick = reset;
-  drawLabels();
+  function prepareExport() {
+    if (buttonTarget !== null) select(svg).interrupt();
+    measureViewport();
+    finishMotion();
+  }
+  function zoomControl(factor) {
+    const target = factor === null ? 1 : Math.min(12, Math.max(1, (buttonTarget ?? transform.k) * factor));
+    const surface = select(svg).interrupt();
+    let movement = surface;
+    if (!matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      buttonTarget = target;
+      movement = surface.transition().duration(200)
+        .on('end.controls interrupt.controls cancel.controls', () => { buttonTarget = null; });
+    }
+    if (factor === null) movement.call(zoomer.transform, zoomIdentity);
+    else movement.call(zoomer.scaleTo, target);
+  }
+  plus.onclick = () => zoomControl(1.6);
+  minus.onclick = () => zoomControl(1/1.6);
+  container.querySelector('[data-map="reset"]').onclick = () => zoomControl(null);
+  resized();
+  if (typeof ResizeObserver === 'function') new ResizeObserver(resized).observe(svg);
+  else window.addEventListener('resize', resized);
   return {
     update(records,ids,appearances={}) {
       const next = new Set(ids || []);
@@ -174,8 +232,8 @@ export function createMap(container, data, onSelect) {
       const k = Math.min(7,Math.max(1.8,.63/Math.max((x1-x0)/720,(y1-y0)/610)));
       select(svg).call(zoomer.transform,zoomIdentity.translate(470,330).scale(k).translate(-(x0+x1)/2,-(y0+y1)/2));
     },
-    prepareExport: finishMotion,
-    get interacting() { return activeGesture; },
+    prepareExport,
+    get interacting() { return activeGesture || buttonTarget !== null; },
     reset
   };
 }

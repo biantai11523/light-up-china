@@ -6,6 +6,15 @@ export const PROFILES = {
   xi: { label:'曦宝去过的地方', short:'曦宝', color:'#bccdf3', muted:'#e6eaf3', stroke:'#7b8eae' }
 };
 export function emptyLayers(){return {together:{},xuan:{},xi:{}};}
+
+export function visibleEntries(layers, id, view) {
+  let profiles;
+  if (view === 'all') profiles = Object.keys(PROFILES);
+  else if (layers[view]?.[id]?.active) profiles = [view];
+  else profiles = ['together'];
+  return profiles.filter(profile => layers[profile][id]?.active)
+    .map(profile => ({ profile, record: layers[profile][id] }));
+}
 export function cleanLayers(value, legacy = {}) {
   const result=emptyLayers();
   for(const profile of Object.keys(result)){
