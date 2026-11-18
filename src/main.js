@@ -32,7 +32,7 @@ function refreshView(){
   records=recordsForView(layers,activeView);
   activity=activityAll.filter(row=>activeView==='all'||row.profile===activeView||activeView!=='together'&&row.profile==='together');
 }
-function updateMap(){map?.update(layers,activeView,selectedIds);}
+function updateMap(paintNow=true){map?.update(layers,activeView,selectedIds,paintNow);}
 function switchView(profile){
   if(saving||document.querySelector('.sheet'))return;
   activeView=activeView===profile?'all':profile;
@@ -150,7 +150,7 @@ function selectCity(id, focus = false) {
   if (!cityById.has(id)) return;
   const wasSelected = selectedIds.delete(id);
   if (focus || !wasSelected) selectedIds.add(id);
-  renderPanel(); updateMap();
+  renderPanel(); updateMap(!focus);
   if (focus) map.focus(cityById.get(id));
   if (focus && !matchMedia('(max-width: 760px)').matches) document.querySelector('#selection-dock .btn-primary')?.focus({ preventScroll: true });
 }

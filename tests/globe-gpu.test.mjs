@@ -1,3 +1,4 @@
+import { meshLayout } from '../src/earth/boundaries.js';
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
@@ -13,7 +14,7 @@ test('every detail packet matches its published hash and every region has drawab
     const bytes=readFileSync('public/data/earth/'+file);
     const hash=createHash('sha256').update(bytes).digest('hex').slice(0,10);
     assert.equal(file,key+'-'+hash+'.orb');
-    const [tile]=decodePacket(bytes,raw.regions.length,raw.provinces.length);
+    const [tile]=decodePacket(bytes,meshLayout(raw));
     assert.equal(tile.key,Number(key));
     for(let i=0;i<tile.faces.length-tile.ground;i+=3)covered.add(tile.points[4*tile.faces[i]+3]);
     assert.ok(tile.edges.every(i=>i<tile.points.length/4));
@@ -23,7 +24,7 @@ test('every detail packet matches its published hash and every region has drawab
 
 test('rotation reuses the whole-world GPU buffers and palette across animation frames',()=>{
   const raw=JSON.parse(readFileSync('public/data/earth/atlas.json'));
-  const tiles=decodePacket(readFileSync('public/data/earth/'+raw.base),raw.regions.length,raw.provinces.length);
+  const tiles=decodePacket(readFileSync('public/data/earth/'+raw.base),meshLayout(raw));
   const whole=batchOverview(tiles);
   assert.equal(whole.points.length,tiles.reduce((n,t)=>n+t.points.length,0));
   assert.equal(whole.faces.length,tiles.reduce((n,t)=>n+t.faces.length,0));

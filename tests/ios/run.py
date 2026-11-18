@@ -65,9 +65,10 @@ def main():
         tmp = Path(folder)
         install_host(tmp, phone)
         shutil.copy(HERE / "scenarios.js", tmp / "qa.js")
-        done = {case: threading.Event() for case in ["baseline", "candidate"]}
+        sequence = [("baseline", 1), ("candidate", 1), ("candidate", 2), ("baseline", 2)]
+        done = threading.Event()
         reports = {}
-        for case, src in zip(done, sys.argv[1:], strict=True):
+        for case, src in zip(["baseline","candidate"], sys.argv[1:], strict=True):
             dist = shutil.copytree(src, tmp / case)
             index = dist / "index.html"
             index.write_text(index.read_text().replace("<head>", '<head><script src="/qa.js"></script>'))
@@ -77,30 +78,46 @@ def main():
                 pass
 
             def do_POST(self):
-                case = urlsplit(self.path).path.removeprefix("/result/")
-                if case not in done:
+                route = urlsplit(self.path).path.strip("/").split("/")
+                if len(route) != 3 or route[0] != "result" or not route[2].isdigit():
                     self.send_error(404)
                     return
-                reports[case] = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
-                self.send_response(204)
-                self.end_headers()
-                done[case].set()
+                case, run = route[1], int(route[2])
+                if (case, run) not in sequence:
+                    self.send_error(404)
+                    return
+                result = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+                reports[f"{case}-{run}"] = result
+                print(case, run, json.dumps(result, ensure_ascii=False), flush=True)
+                try:
+                    call("xcrun", "simctl", "io", phone, "screenshot", str(OUT / f"{case}-{run}.png"))
+                    i = sequence.index((case, run)) + 1
+                    next_url = f"/{sequence[i][0]}/?pass={sequence[i][1]}" if i < len(sequence) and "error" not in result else None
+                    payload = json.dumps({"next": next_url}).encode()
+                    self.send_response(200)
+                    self.send_header("Content-Type","application/json")
+                    self.send_header("Content-Length",str(len(payload)))
+                    self.end_headers()
+                    self.wfile.write(payload)
+                    if next_url is None:
+                        done.set()
+                except Exception as exc:
+                    result["error"] = str(exc)
+                    done.set()
+                    raise
 
         server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), functools.partial(Handler, directory=folder))
         threading.Thread(target=server.serve_forever, daemon=True).start()
         try:
-            for case in done:
-                url = f"http://127.0.0.1:{server.server_port}/{case}/"
-                subprocess.run(["xcrun", "simctl", "terminate", phone, BUNDLE], capture_output=True)
-                print("Launching", case, flush=True)
-                call("xcrun", "simctl", "launch", phone, BUNDLE, url)
-                completed = done[case].wait(150)
-                call("xcrun", "simctl", "io", phone, "screenshot", str(OUT / f"{case}.png"))
-                if not completed:
-                    raise RuntimeError(case + " did not report from the iOS web process")
-                print(json.dumps(reports[case], ensure_ascii=False), flush=True)
-                if "error" in reports[case]:
-                    raise RuntimeError(reports[case]["error"])
+            url = f"http://127.0.0.1:{server.server_port}/baseline/?pass=1"
+            print("Comparing both bundles in one WKWebView (A/B/B/A)", flush=True)
+            call("xcrun", "simctl", "launch", phone, BUNDLE, url)
+            if not done.wait(420):
+                call("xcrun", "simctl", "io", phone, "screenshot", str(OUT / "timeout.png"))
+                raise RuntimeError("The iOS web process did not finish the trace sequence")
+            errors = [r["error"] for r in reports.values() if "error" in r]
+            if errors or len(reports) != len(sequence):
+                raise RuntimeError(errors or "Incomplete trace sequence")
         finally:
             server.shutdown()
             (OUT / "frames.json").write_text(json.dumps(dict(device="iPhone 17 Pro Simulator", runtime=runtime,

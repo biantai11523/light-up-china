@@ -1,5 +1,7 @@
 import { decodePacket, batchOverview } from './mesh.js';
 import { unit, intersects } from './camera.js';
+import { meshLayout } from './boundaries.js';
+import { indexLabels } from './drawing.js';
 
 const dataRoot = () => new URL(import.meta.env.BASE_URL+'data/earth/', document.baseURI);
 export function catalog(raw) {
@@ -12,20 +14,21 @@ export function catalog(raw) {
     return {id,name,alias:[alias,localAlias].filter(Boolean).join(' '),countryId,country:nation.name,countryAlias:nation.alias,provinceId:parent.id,province:parent.name,
       lon,lat,span,focusLon,focusLat,focusSpan,idx,type:'region',v:unit(lon,lat)};
   });
-  return {cities,countries,provinces,features:[...cities,...provinces,...countries],raw};
+  const features=[...cities,...provinces,...countries];
+  return {cities,countries,provinces,features,raw,layout:meshLayout(raw),visitLabels:indexLabels(features,cities)};
 }
-async function response(url){
+async function readAsset(url, type = 'arrayBuffer'){
   const controller=new AbortController(), timer=setTimeout(()=>controller.abort(),18000);
   try {
     const r=await fetch(url,{signal:controller.signal});
     if(!r.ok)throw new Error('边界数据加载失败');
     // Include the body in the timeout, including when a connection stalls midway.
-    return new Response(await r.arrayBuffer());
+    return await r[type]();
   } finally { clearTimeout(timer); }
 }
 export async function loadEarth() {
   const root=dataRoot();
-  const data=catalog(await (await response(new URL('atlas.json',root))).json());
+  const data=catalog(await readAsset(new URL('atlas.json',root), 'json'));
   let worker, sequence=0;
   const jobs=new Map();
   try {
@@ -36,48 +39,98 @@ export async function loadEarth() {
     }
   } catch { worker=null; }
   async function load(file){
-    const buffer=await (await response(new URL(file,root))).arrayBuffer();
+    const buffer=await readAsset(new URL(file,root));
     if(worker){
       try{return await new Promise((resolve,reject)=>{
         const id=++sequence;jobs.set(id,{resolve,reject});
-        worker.postMessage({id,buffer,regions:data.cities.length,provinces:data.provinces.length,overview:file===data.raw.base},[buffer]);
-      });}catch{if(!buffer.byteLength)return decodePacket(await (await response(new URL(file,root))).arrayBuffer(),data.cities.length,data.provinces.length);}
+        worker.postMessage({id,buffer,layout:data.layout,overview:file===data.raw.base},[buffer]);
+      });}catch{if(!buffer.byteLength)return decodePacket(await readAsset(new URL(file,root)),data.layout);}
     }
-    return decodePacket(buffer,data.cities.length,data.provinces.length);
+    return decodePacket(buffer,data.layout);
   }
   const low=await load(data.raw.base);
   data.overview=low.at(-1)?.key===-1?low.pop():batchOverview(low);
-  const fine=new Map(), pending=new Map(), retryAt=new Map();
-  data.visible=(f,coarse=false)=>low.filter(t=>intersects(data.raw.bounds[t.key],f)).map(t=>{
-    const detailed=!coarse && f.zoom>=3 && fine.get(t.key);
-    if(detailed)detailed.seen=performance.now();
-    return detailed||t;
+  for(let i=0;i<low.length;i++) {
+    low[i].shared=data.overview;
+    low[i].slice=data.overview.slices[i];
+  }
+  const stored = new Map(), jobsByKey = new Map(), retryAt = new Map(), pinned = new Map();
+  const coarseByKey = new Map(low.map(t=>[t.key,t]));
+  let wanted = new Set(), active = 0;
+  data.onDetail = () => {};
+  data.onEvict = () => {};
+  function visibleBase(f) {
+    return low.filter(t=>intersects(data.raw.bounds[t.key],f));
+  }
+  data.visible = (f,coarse=false) => visibleBase(f).map(t=>{
+    const fine=!coarse && f.zoom>=3 && stored.get(t.key);
+    if(fine) fine.seen=performance.now();
+    return fine||t;
   });
-  data.detailReady=f=>f.zoom<3 || low.every(t=>!intersects(data.raw.bounds[t.key],f)||fine.has(t.key));
-  let generation=0;
-  data.loadDetail=async(f,onEvict)=>{
-    const current=++generation;
-    if(f.zoom<3)return false;
-    const visible=low.filter(t=>intersects(data.raw.bounds[t.key],f)).map(t=>t.key);
-    const missing=visible.filter(k=>!fine.has(k) && (retryAt.get(k)||0)<Date.now());
-    let changed=false;
-    for(let i=0;i<missing.length && current===generation;i+=3)await Promise.all(missing.slice(i,i+3).map(async key=>{
-      if(!pending.has(key))pending.set(key,load(data.raw.detail[key]).then(([t])=>{
-        t.seen=performance.now();t.bytes=(t.shapes[0]?.coords.buffer.byteLength||0)+2*(t.points.byteLength+t.faces.byteLength+t.edges.byteLength);
-        fine.set(key,t);changed=true;
-      })
-        .catch(()=>{retryAt.set(key,Date.now()+12000);}).finally(()=>pending.delete(key)));
-      await pending.get(key);
-    }));
-    // Protect the current view. Reclaim old CPU geometry and GPU buffers together.
-    if(current===generation){
-      let bytes=[...fine.values()].reduce((n,t)=>n+t.bytes,0);
-      for(const t of [...fine.values()].filter(t=>!visible.includes(t.key)).sort((a,b)=>a.seen-b.seen)){
-        if(fine.size<=16 && bytes<=48*1024*1024)break;
-        fine.delete(t.key);bytes-=t.bytes;onEvict?.(t);
-      }
+  data.detailReady = f => f.zoom<3 || visibleBase(f).every(t=>stored.has(t.key));
+
+  function trim() {
+    let bytes=0;
+    for(const t of stored.values())bytes+=t.bytes;
+    if(stored.size<=16 && bytes<=48*1024*1024)return;
+    const old=[...stored.values()].filter(t=>!wanted.has(t.key)&&!pinned.has(t.key)).sort((a,b)=>a.seen-b.seen);
+    for(const t of old){
+      if(stored.size<=16 && bytes<=48*1024*1024)break;
+      stored.delete(t.key);bytes-=t.bytes;data.onEvict(t);
     }
-    return changed;
+  }
+  function start(job) {
+    active++;job.started=true;
+    load(data.raw.detail[job.key]).then(([tile])=>{
+      tile.fallback=coarseByKey.get(tile.key);
+      tile.seen=performance.now();
+      tile.bytes=(tile.shapes[0]?.coords.buffer.byteLength||0)+tile.points.byteLength*2+
+        tile.faces.byteLength+tile.ground*4+2*tile.edges.byteLength+tile.paintRuns.byteLength+
+        tile.groundRuns.byteLength+tile.edgeRuns.reduce((n,r)=>n+r.byteLength,0);
+      stored.set(tile.key,tile);
+      job.resolve(true);
+      if(wanted.has(tile.key))data.onDetail();
+    }).catch(()=>{
+      retryAt.set(job.key,Date.now()+12000);job.resolve(false);
+    }).finally(()=>{active--;jobsByKey.delete(job.key);trim();pump();});
+  }
+  function pump() {
+    for(const [key,job] of jobsByKey){
+      if(!job.started && !wanted.has(key) && !pinned.has(key)){jobsByKey.delete(key);job.resolve(false);}
+    }
+    if(active>=3)return;
+    const waiting=[...jobsByKey.values()].filter(job=>!job.started).sort((a,b)=>a.distance-b.distance);
+    for(const job of waiting){if(active>=3)break;start(job);}
+  }
+  data.loadDetail = async(f,{hold=false}={})=>{
+    const tiles=f.zoom>=3 ? visibleBase(f) : [];
+    if(!hold)wanted=new Set(tiles.map(t=>t.key));
+    const promises=[];
+    for(const t of tiles){
+      const key=t.key;
+      if(hold)pinned.set(key,(pinned.get(key)||0)+1);
+      if(stored.has(key)||(retryAt.get(key)||0)>Date.now())continue;
+      if(!jobsByKey.has(key)){
+        let resolve;
+        const promise=new Promise(r=>{resolve=r;});
+        jobsByKey.set(key,{key,promise,resolve,started:false,distance:0});
+      }
+      const job=jobsByKey.get(key),box=data.raw.bounds[key];
+      const dx=Math.abs(((f.lon-(box[0]+box[2])/2+540)%360)-180)*Math.cos(f.lat*Math.PI/180);
+      job.distance=Math.hypot(dx,f.lat-(box[1]+box[3])/2);
+      promises.push(job.promise);
+    }
+    pump();
+    try{
+      const changed=(await Promise.all(promises)).some(Boolean);
+      return hold ? {tiles:data.visible(f), coarse:!data.detailReady(f)} : changed;
+    }
+    finally{
+      if(hold)for(const {key} of tiles){
+        const n=pinned.get(key)-1;if(n)pinned.set(key,n);else pinned.delete(key);
+      }
+      trim();
+    }
   };
   data.low=low;
   return data;

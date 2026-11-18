@@ -34,15 +34,24 @@ export function intersects([west,south,east,north], f) {
   if (south > f.lat+f.angle || north < f.lat-f.angle) return false;
   return Math.abs(wrap((west+east)/2-f.lon)) <= (east-west)/2 + f.dlon;
 }
-// Keep the geographic point under the fingers fixed as their midpoint moves.
+// Solve the north-up orthographic inverse for camera orientation. Both polar
+// solutions can be valid; prefer the one continuous with the previous pose.
 export function anchored(view, anchor, point, width, height) {
   if (!anchor) return view;
-  const next = {...view};
-  for(let i=0; i<4; i++) {
-    const here=unproject(point[0],point[1],frame(next,width,height));
-    if (!here) break;
-    next.lon=wrap(next.lon+wrap(anchor[0]-here[0]));
-    next.lat=clamp(next.lat+anchor[1]-here[1],-89.999,89.999);
+  const radius=.46*Math.min(width,height)*view.zoom;
+  const latitude=anchor[1]*RAD;
+  const maxX=Math.max(1e-8,Math.cos(latitude));
+  const x=clamp((point[0]-width/2)/radius,-maxX,maxX);
+  const y=(height/2-point[1])/radius;
+  const front=Math.sqrt(Math.max(0,1-x*x-y*y));
+  const beta=Math.atan2(y,front);
+  const angle=Math.asin(clamp(Math.sin(latitude)/Math.max(1e-10,Math.hypot(y,front)),-1,1));
+  let best, bestScore=Infinity;
+  for(const candidate of [angle-beta,Math.PI-angle-beta]){
+    const raw=wrap(candidate/RAD), lat=clamp(raw,-89.999,89.999), p=lat*RAD;
+    const lon=wrap(anchor[0]-Math.atan2(x,front*Math.cos(p)-y*Math.sin(p))/RAD);
+    const score=(lat-view.lat)**2 + (wrap(lon-view.lon)*Math.cos(p))**2 + 1000*(raw-lat)**2;
+    if(score<bestScore){bestScore=score;best={lon,lat,zoom:view.zoom};}
   }
-  return next;
+  return best;
 }

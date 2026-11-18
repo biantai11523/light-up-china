@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { fixture,input } from './helpers.mjs';
 import { recordsForView,cityAppearance,cleanLayers } from '../src/profiles.js';
-import { openApp,until,typeQuery,tapRegion as tap } from './ui-harness.mjs';
+import { openApp,until,typeQuery,tapRegion as tap,searchAndSelect } from './ui-harness.mjs';
 const write=(f,token,profile,id,body)=>f.request(`/api/profiles/${profile}/cities/${id}`,{method:'PUT',headers:{Authorization:`Bearer ${token}`},body:JSON.stringify(body)});
 const batch=(f,token,profile,updates)=>f.request(`/api/profiles/${profile}/cities/batch`,{method:'POST',headers:{Authorization:`Bearer ${token}`},body:JSON.stringify({updates})});
 test('joint history remains compatible and all joint cities are inherited by both personal views',async()=>{
@@ -105,7 +105,7 @@ test('search and the read-only city sheet show the right notes across profiles, 
     w.dispatchEvent(new w.Event('online'));
     await until(() => d.querySelector('.record-list').textContent.includes('飞来峰'));
     d.querySelector('[data-close]').click();
-    tap(w, '330200');
+    searchAndSelect(w, '330200');
     d.querySelector('[data-view="xi"]').click();
     assert.match(d.querySelector('#selection-dock').textContent,/已选 2 个地区/);
     d.querySelector('#selection-dock [data-action="edit"]').click();

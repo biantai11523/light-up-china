@@ -5,6 +5,7 @@
   const frame = () => new Promise(resolve => raf(resolve));
   const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
   const sample = location.pathname.split('/')[1];
+  const pass = new URLSearchParams(location.search).get('pass') || '1';
   let work = null;
   window.requestAnimationFrame = callback => raf(time => {
     const start = performance.now();
@@ -39,14 +40,18 @@
     await sleep(350);
     const box = stage.getBoundingClientRect();
     const x = box.left + box.width / 2, y = box.top + box.height / 2;
+    let rectReads = 0;
+    const bounds = stage.getBoundingClientRect.bind(stage);
+    stage.getBoundingClientRect = () => { rectReads++; return bounds(); };
     const report = {engine: navigator.userAgent, renderer: stage.dataset.renderer,
-      viewport: [innerWidth, innerHeight, devicePixelRatio], scenarios: {}};
+      viewport: [innerWidth, innerHeight, devicePixelRatio], stage:[box.width,box.height], scenarios: {}};
     const dispatch = (type, id, px, py) => stage.dispatchEvent(new PointerEvent(type, {
       pointerId: id, pointerType: 'touch', isPrimary: id === 1, bubbles: true, cancelable: true,
       buttons: type === 'pointerup' ? 0 : 1, button: type === 'pointermove' ? -1 : 0, clientX: px, clientY: py
     }));
     async function trace(name, move, duration = 1600) {
       const intervals = [], handler = [];
+      const initialReads=rectReads;
       work = [];
       let previous = await frame(), start = previous;
       let elapsed = 0;
@@ -59,9 +64,15 @@
       }
       report.scenarios[name] = {frames: intervals.length, intervalP50: quantile(intervals,.5),
         intervalP95: quantile(intervals,.95), over33ms: intervals.filter(v=>v>33.5).length,
-        inputP95: quantile(handler,.95), appRafP95: quantile(work,.95)};
+        inputP95: quantile(handler,.95), appRafP95: quantile(work,.95), layoutReads:rectReads-initialReads};
       work = null;
     }
+    // Let both the web process and its shader cache warm up before timing.
+    dispatch('pointerdown',1,x-30,y);
+    for(let i=1;i<=36;i++){await frame();dispatch('pointermove',1,x-30+i*1.5,y);}
+    dispatch('pointerup',1,x+24,y);document.querySelector('[data-map="reset"]').click();
+    await sleep(600);
+    for(let i=0;i<18;i++)await frame();
     await trace('idle',()=>{},750);
     const before = stage.parentElement.querySelector('.earth-readout').textContent;
     dispatch('pointerdown',1,x-70,y);
@@ -95,6 +106,8 @@
   addEventListener('load',async()=>{
     let result;
     try { result=await run(); } catch(error) { result={error:String(error.stack||error)}; }
-    await nativeFetch('/result/'+sample,{method:'POST',body:JSON.stringify(result)});
+    const reply=await nativeFetch('/result/'+sample+'/'+pass,{method:'POST',body:JSON.stringify(result)});
+    const {next}=await reply.json();
+    if(next)location.replace(next);
   },{once:true});
 })();

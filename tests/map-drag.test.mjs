@@ -1,3 +1,4 @@
+import { meshLayout } from '../src/earth/boundaries.js';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -21,7 +22,7 @@ test('front-side geographic coordinates round-trip across the date line and near
 });
 
 test('all writable regions have a real mesh, with precise land anchors for Macau, Monaco and Vatican City',()=>{
-  const load=file=>decodePacket(readFileSync('public/data/earth/'+file),worldAtlas.regions.length,worldAtlas.provinces.length);
+  const load=file=>decodePacket(readFileSync('public/data/earth/'+file),meshLayout(worldAtlas));
   const shapes=load(worldAtlas.base).flatMap(t=>t.shapes.filter(s=>s.level===0));
   assert.equal(new Set(shapes.map(s=>s.idx)).size,worldAtlas.regions.length);
   for(const id of ['820000','ne-MCO-p00-q','ne-VAT-p00-q']){
@@ -48,6 +49,10 @@ test('pointer drags coalesce and rotate without a ghost tap; pinch scales contin
     w.matchMedia=()=>({matches:true});
   }}),d=w.document,stage=d.querySelector('.map-stage');
   try{
+    const present=()=>{
+      const scheduled=[...frames.values()];frames.clear();
+      for(const paint of scheduled)paint(w.performance.now()+40);
+    };
     const dispatch=(type,id,x,y)=>stage.dispatchEvent(new w.PointerEvent(type,{pointerId:id,clientX:x,clientY:y,bubbles:true,button:0}));
     const read=()=>d.querySelector('.earth-readout').textContent;
     const before=read();
@@ -55,6 +60,7 @@ test('pointer drags coalesce and rotate without a ghost tap; pinch scales contin
     for(let i=1;i<=20;i++)dispatch('pointermove',1,170+i*2,180+i);
     assert.equal(frames.size,1);assert.equal(read(),before);
     dispatch('pointerup',1,210,200);
+    present();
     assert.notEqual(read(),before);
     stage.dispatchEvent(new w.MouseEvent('click',{bubbles:true,clientX:210,clientY:200}));
     assert.equal(d.querySelector('#selection-dock').hidden,true);
@@ -63,6 +69,7 @@ test('pointer drags coalesce and rotate without a ghost tap; pinch scales contin
     dispatch('pointerdown',2,145,180);dispatch('pointerdown',3,245,180);
     dispatch('pointermove',2,130,180);dispatch('pointermove',3,260,180);
     dispatch('pointerup',2,130,180);dispatch('pointerup',3,260,180);
+    present();
     assert.ok(Math.abs(radius()/initial-1.3)<.001);
     assert.equal(d.querySelector('#selection-dock').hidden,true);
   }finally{await w.happyDOM.abort();f.db.close();}
