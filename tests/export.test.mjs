@@ -2,46 +2,46 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { Resvg } from '@resvg/resvg-js';
-import { createMapSnapshot, createMapSvgBlob, exportDimensions } from '../src/export.js';
+import { createMapSnapshot, exportDimensions } from '../src/export.js';
 import { fixture } from './helpers.mjs';
 import { openApp, until, searchAndSelect, enterDemo } from './ui-harness.mjs';
 
-function measureMap(document,width=390,height=456){
-  document.querySelector('.map-stage').getBoundingClientRect=()=>({width,height,left:0,top:200});
-  document.querySelector('.map-svg').getBoundingClientRect=()=>({width,height:height-100,left:0,top:200});
-  document.querySelector('.sea-inset').getBoundingClientRect=()=>({width:62,height:88,left:width-78,top:200+height-92});
+function measureMap(document,width=390,height=390){
+  document.querySelector('.map-stage').getBoundingClientRect=()=>({width,height,left:0,top:0});
 }
-const meta={count:18,provinces:14,total:370};
-test('current-view export keeps zoom, selections, borders and inset, and rasterizes into a valid PNG',async()=>{
-  const f=fixture(),w=await openApp(f),d=w.document;
+test('the real globe export preserves the camera, Macau selection, demo status and vector geometry',async()=>{
+  const f=fixture(), blobs=new Map();
+  const w=await openApp(f,{configure(w){
+    w.URL.createObjectURL=blob=>{const key='blob:https://example.test/'+crypto.randomUUID();blobs.set(key,blob);return key;};
+    w.URL.revokeObjectURL=()=>{};
+    w.Image=class{set src(url){if(url)queueMicrotask(()=>this.onerror?.());}};
+  }}),d=w.document;
   try{
     measureMap(d);enterDemo(d);
-    const card=d.querySelector('.map-card');
-    const nationwide=createMapSnapshot(card,meta,{demo:true,date:new Date('2026-11-16T12:00:00Z')});
-    assert.equal(nationwide.pixelWidth,2636);assert.equal(nationwide.pixelHeight,4096);assert.match(nationwide.svg,/示例/);
-    assert.match(nationwide.svg,/<svg[^>]+width="2636" height="4096" viewBox="0 0 390 606"/);
-    assert.ok(!nationwide.svg.includes('export-dots'));
-    assert.ok(!/<foreignObject|<image|https?:\/\/(?!www.w3.org)/.test(nationwide.svg));
-    assert.match(nationwide.svg,/fill="#c5f567"/);assert.match(nationwide.svg,/南海诸岛/);
-    const png=new Resvg(nationwide.svg,{fitTo:{mode:'width',value:nationwide.pixelWidth}}).render().asPng();
-    assert.equal(png.subarray(1,4).toString(),'PNG');assert.equal(png.readUInt32BE(16),2636);assert.equal(png.readUInt32BE(20),4096);assert.ok(png.length>30000);
-    const vector=await createMapSvgBlob(nationwide).text();
-    assert.match(vector,/^<\?xml version="1.0" encoding="UTF-8"\?>/);
-    assert.match(vector,/<path /);assert.ok(!/<image|<foreignObject|<script|data:image/i.test(vector));
-    assert.equal((vector.match(/data-city=/g)||[]).length,card.querySelectorAll('[data-city]').length);
-    await mkdir('artifacts',{recursive:true});await writeFile('artifacts/export-mobile.png',png);
-    await writeFile('artifacts/export-vector.svg',vector);
-    searchAndSelect(w,'330100');
-    const transform=d.querySelector('.map-svg>g').getAttribute('transform');
-    const zoomed=createMapSnapshot(card,meta,{demo:true});
-    assert.ok(zoomed.svg.includes(`transform="${transform}"`));assert.match(zoomed.svg,/fill="#ff976f"/);assert.match(zoomed.svg,/杭州市/);
-    assert.equal(d.querySelector('.map-svg>g').getAttribute('transform'),transform);
-    await writeFile('artifacts/export-zoomed.png',new Resvg(zoomed.svg,{fitTo:{mode:'width',value:zoomed.pixelWidth}}).render().asPng());
+    async function exported(){
+      d.querySelector('[data-action="export-map"]').click();
+      await until(()=>d.querySelector('[data-save-svg]'));
+      const svg=await blobs.get(d.querySelector('.export-preview img').src).text();
+      d.querySelector('[data-close]').click();
+      return svg;
+    }
+    const overview=await exported();
+    assert.match(overview,/示例/);assert.match(overview,/Natural Earth/);assert.match(overview,/fill="#c5f567"/);
+    assert.ok(!/<image|<foreignObject|<script|data:image/i.test(overview));
+    const image=new Resvg(overview,{fitTo:{mode:'width',value:780}}).render().asPng();
+    await mkdir('artifacts',{recursive:true});await writeFile('artifacts/globe-overview.png',image);
+    searchAndSelect(w,'820000');
+    const local=await exported();
+    assert.match(local,/data-city="820000"/);assert.match(local,/>澳门<\/text>/);
+    assert.match(local,/fill="#ff976f"/);
+    await writeFile('artifacts/globe-macau.png',new Resvg(local,{fitTo:{mode:'width',value:780}}).render().asPng());
+    assert.notEqual(local,overview);
   }finally{await w.happyDOM.abort();f.db.close();}
 });
-test('large viewport exports stay within the mobile-safe size limit; cached maps are identified',async()=>{
-  const f=fixture(),w=await openApp(f),d=w.document;
-  try{measureMap(d,2400,1600);const s=createMapSnapshot(d.querySelector('.map-card'),{count:0,provinces:0,total:370},{offline:true});assert.ok(Math.max(s.pixelWidth,s.pixelHeight)<=4096);assert.ok(s.pixelWidth*s.pixelHeight<=12000000);assert.match(s.svg,/离线缓存/);assert.ok(!s.svg.includes('undefined'));}finally{await w.happyDOM.abort();f.db.close();}
+test('large viewport globe exports stay within the pixel budget and label cached maps',()=>{
+  const s=createMapSnapshot({width:2400,height:1600,body:'<circle r="200"/>'},{count:0,total:4901,countries:0},{offline:true});
+  assert.ok(s.pixelWidth*s.pixelHeight<=12000000);assert.match(s.svg,/离线缓存/);
+  assert.ok(!s.svg.includes('undefined'));
 });
 test('export dialog supplies a PNG download even when system file sharing is unsupported',async()=>{
   const f=fixture();const blobs=new Map(),downloads=[];
@@ -56,7 +56,7 @@ test('export dialog supplies a PNG download even when system file sharing is uns
   }}),d=w.document;
   try{
     measureMap(d);d.querySelector('[data-action="export-map"]').click();
-    assert.ok(d.querySelector('[data-save-svg]'));assert.equal(d.querySelector('[data-save-svg]').disabled,false);
+    await until(()=>d.querySelector('[data-save-svg]'));assert.equal(d.querySelector('[data-save-svg]').disabled,false);
     d.querySelector('[data-save-svg]').click();assert.equal(downloads.length,1);assert.match(downloads[0].name,/\.svg$/);
     const vector=blobs.get(downloads[0].url);assert.match(vector.type,/image\/svg\+xml/);assert.ok(!(await vector.text()).includes('data:image/png'));
     await until(()=>d.querySelector('[data-save-png]')?.disabled===false);

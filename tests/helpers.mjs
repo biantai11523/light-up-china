@@ -12,7 +12,8 @@ export function fixture() {
   }
   const DB={prepare(sql){return new Statement(sql);},async batch(statements){db.exec('BEGIN');try{const results=[];for(const s of statements)results.push({results:db.prepare(s.sql).all(...s.params)});db.exec('COMMIT');return results;}catch(e){db.exec('ROLLBACK');throw e;}}};
   const map=JSON.parse(readFileSync('public/data/china.json','utf8'));
-  const worker=createWorker(map.cities.map(c=>c.id));
+  const atlas=JSON.parse(readFileSync('public/data/earth/atlas.json','utf8'));
+  const worker=createWorker(atlas.regions.map(r=>r[0]));
   const env={DB,SESSION_SECRET:'local-test-only-secret-not-for-production'};
   const origin='https://biantai11523.github.io';
   const request=(path,options={})=>worker.fetch(new Request(`https://api.test${path}`,{...options,headers:{Origin:origin,'Content-Type':'application/json',...options.headers}}),env);

@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { fixture, input } from './helpers.mjs';
-import { openApp, until, searchAndSelect, enterDemo, typeQuery } from './ui-harness.mjs';
+import { openApp, until, searchAndSelect, enterDemo, typeQuery, tapRegion, worldAtlas } from './ui-harness.mjs';
 test('mobile DOM flow: search, select, save a memory, and see it from another visitor',async()=>{
   const f=fixture(),w=await openApp(f),d=w.document;
   try{
@@ -33,7 +33,7 @@ test('selecting on the map opens a mobile action bar without scrolling the page'
   const f=fixture();let scrolls=0;
   const w=await openApp(f,{configure(w){w.HTMLElement.prototype.scrollIntoView=()=>scrolls++;w.SVGElement.prototype.scrollIntoView=()=>scrolls++;}}),d=w.document;
   try{
-    d.querySelector('.map-svg [data-city="330100"]').dispatchEvent(new w.MouseEvent('click',{bubbles:true}));
+    tapRegion(w,'330100');
     assert.equal(scrolls,0);assert.equal(d.querySelector('#selection-dock').hidden,false);
     assert.match(d.querySelector('#selection-dock').textContent,/杭州市/);
     d.querySelector('#selection-dock [data-action="edit"]').click();assert.ok(d.querySelector('#visit-form'));
@@ -41,12 +41,12 @@ test('selecting on the map opens a mobile action bar without scrolling the page'
   }finally{await w.happyDOM.abort();f.db.close();}
 });
 test('dragging the map does not accidentally select a city at pointer release',async()=>{
-  const f=fixture(),w=await openApp(f),d=w.document,svg=d.querySelector('.map-svg');
+  const f=fixture(),w=await openApp(f),d=w.document,svg=d.querySelector('.map-stage');
   try{
     svg.dispatchEvent(new w.PointerEvent('pointerdown',{pointerId:1,clientX:100,clientY:100}));
     svg.dispatchEvent(new w.PointerEvent('pointermove',{pointerId:1,clientX:130,clientY:125}));
     svg.dispatchEvent(new w.PointerEvent('pointerup',{pointerId:1,clientX:130,clientY:125}));
-    d.querySelector('.map-svg [data-city="330100"]').dispatchEvent(new w.MouseEvent('click',{bubbles:true}));
+    tapRegion(w,'330100');
     assert.equal(d.querySelector('#selection-dock').hidden,true);
   }finally{await w.happyDOM.abort();f.db.close();}
 });
@@ -71,9 +71,10 @@ test('search can browse the whole country in pages or select a distant result fr
     const list = d.querySelector('.search-results');
     list.dispatchEvent(new w.Event('scroll'));
     assert.ok(d.querySelectorAll('[data-pick]').length > firstCount);
-    while (!more.hidden) more.click();
+    while (d.querySelectorAll('[data-pick]').length < 96 && !more.hidden) more.click();
     assert.equal(d.querySelector('[data-pick]'), first);
-    assert.equal(new Set([...d.querySelectorAll('[data-pick]')].map(n => n.dataset.pick)).size, 370);
+    assert.equal(new Set([...d.querySelectorAll('[data-pick]')].map(n => n.dataset.pick)).size, 96);
+    assert.ok(d.querySelector('.search-meta').textContent.includes(String(worldAtlas.regions.length)));
     typeQuery(w, '６５０１００');
     const field = d.querySelector('#city-search');
     field.dispatchEvent(new w.KeyboardEvent('keydown', {key: 'Enter', isComposing: true, bubbles: true}));

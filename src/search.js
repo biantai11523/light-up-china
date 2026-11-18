@@ -7,10 +7,10 @@ export function findCities(cities, layers, view, { query, province, filter }) {
   const words = text.split(/\s+/).filter(Boolean);
   const results = [];
   for (const city of cities) {
-    if (province && city.provinceId !== province) continue;
+    if (province && city.provinceId !== province && city.countryId !== province) continue;
     const entries = visibleEntries(layers, city.id, view);
     if (filter === 'lit' && !entries.length || filter === 'unlit' && entries.length) continue;
-    const location = [normalize(city.name), normalize(city.province), city.id];
+    const location = [city.name, city.province, city.country, city.alias, city.countryAlias, city.countryId, city.id].filter(Boolean).map(normalize);
     const noteWords = words.filter(word => !location.some(field => field.includes(word)));
     const notes = entries.filter(entry => entry.record.note);
     const matchesNote = (entry, word) => normalize(entry.record.note).includes(word);
@@ -19,7 +19,7 @@ export function findCities(cities, layers, view, { query, province, filter }) {
     // A city name or code should appear ahead of a passing mention in a note.
     let rank = 1;
     if (noteWords.length) rank = 2;
-    else if (text && (location[0].startsWith(text) || city.id === text)) rank = 0;
+    else if (text && (location[0].startsWith(text) || normalize(city.id) === text || normalize(city.alias || '').startsWith(text))) rank = 0;
     results.push({ city, entries, preview, rank });
   }
   return text ? results.sort((a, b) => a.rank - b.rank) : results;

@@ -1,107 +1,88 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { fixture } from './helpers.mjs';
-import { openApp, searchAndSelect, until } from './ui-harness.mjs';
-import { createMapSnapshot } from '../src/export.js';
-test('real zoom-handler move bursts paint once, avoid label writes and restore full geometry on release',async()=>{
-  const f=fixture(),frames=new Map(),idles=[];let id=0;
+import { openApp, searchAndSelect, until, worldAtlas } from './ui-harness.mjs';
+import { frame, HOME, project, unit, unproject, wrap } from '../src/earth/camera.js';
+import { decodePacket, contains } from '../src/earth/mesh.js';
+import { catalog } from '../src/earth/atlas.js';
+import { labelsFor } from '../src/earth/drawing.js';
+
+test('front-side geographic coordinates round-trip across the date line and near both poles',()=>{
+  for(const [lon,lat,zoom] of [[179,0,1],[-179,70,1.2],[80,89,20],[-120,-87,8],[113.57,22.16,570]]){
+    const f=frame({lon,lat,zoom},390,390);
+    for(const [x,y] of [[195,195],[185,180],[240,215]]){
+      const ll=unproject(x,y,f),p=project(unit(...ll),f);
+      assert.ok(p[2]>0 && Math.hypot(p[0]-x,p[1]-y)<1e-6);
+    }
+    assert.ok(project(unit(wrap(lon+180),-lat),f)[2]<0);
+  }
+  assert.equal(unproject(0,0,frame(HOME,390,390)),null);
+});
+
+test('all writable regions have a real mesh, with precise land anchors for Macau, Monaco and Vatican City',()=>{
+  const load=file=>decodePacket(readFileSync('public/data/earth/'+file),worldAtlas.regions.length,worldAtlas.provinces.length);
+  const shapes=load(worldAtlas.base).flatMap(t=>t.shapes.filter(s=>s.level===0));
+  assert.equal(new Set(shapes.map(s=>s.idx)).size,worldAtlas.regions.length);
+  for(const id of ['820000','ne-MCO-p00-q','ne-VAT-p00-q']){
+    const i=worldAtlas.regions.findIndex(r=>r[0]===id),r=worldAtlas.regions[i];
+    const keys=Object.entries(worldAtlas.bounds).filter(([,b])=>r[5]>=b[0] && r[5]<=b[2] && r[6]>=b[1] && r[6]<=b[3]);
+    assert.ok(keys.some(([key])=>load(worldAtlas.detail[key])[0].shapes.some(s=>s.idx===i && contains(s,r[5],r[6]))),id);
+  }
+});
+
+test('unselected Macau is discoverable by zooming into the Pearl River Delta, then its name grows with the globe',()=>{
+  const data=catalog(worldAtlas);data.byId=new Map(data.cities.map(c=>[c.id,c]));
+  const macau=data.byId.get('820000');
+  const at=k=>labelsFor(data,frame({lon:macau.lon,lat:macau.lat,zoom:k},390,390),new Set(),new Map()).find(l=>l.item.id==='820000');
+  const nearby=at(12), close=at(600);
+  assert.equal(nearby.text,'澳门');assert.equal(nearby.pin,true);
+  assert.equal(close.item.type,'region');assert.ok(close.size>nearby.size);assert.equal(close.pin,false);
+});
+
+test('pointer drags coalesce and rotate without a ghost tap; pinch scales continuously without selecting',async()=>{
+  const f=fixture(),frames=new Map();let handle=0;
   const w=await openApp(f,{configure(w){
-    w.requestAnimationFrame=callback=>{frames.set(++id,callback);return id;};
-    w.cancelAnimationFrame=key=>frames.delete(key);
-    w.requestIdleCallback=callback=>{idles.push(callback);return idles.length;};
-  }}),d=w.document;
+    w.requestAnimationFrame=fn=>{frames.set(++handle,fn);return handle;};
+    w.cancelAnimationFrame=id=>frames.delete(id);
+    w.matchMedia=()=>({matches:true});
+  }}),d=w.document,stage=d.querySelector('.map-stage');
   try{
-    while(idles.length)idles.shift()();
-    const svg=d.querySelector('.map-svg'),group=svg.querySelector('g'),labels=svg.querySelector('.city-labels');
-    svg.getBoundingClientRect=()=>({left:0,top:0,width:390,height:356});
-    // Happy DOM lacks SVGPoint.matrixTransform. Use a deterministic screen matrix
-    // while exercising D3's real mouse gesture handlers and the application's frame scheduler.
-    svg.createSVGPoint=()=>({x:0,y:0,matrixTransform(){return {x:this.x,y:this.y};}});
-    svg.getScreenCTM=()=>({inverse:()=>({a:1,b:0,c:0,d:1,e:0,f:0})});
-    const paths=[...svg.querySelectorAll('.city-shape,.province-shape')];
-    const original=paths.map(node=>node.getAttribute('d'));
-    let transformWrites=0,labelWrites=0;
-    const setGroup=group.setAttribute.bind(group),setLabels=labels.setAttribute.bind(labels);
-    group.setAttribute=(name,value)=>{if(name==='transform')transformWrites++;setGroup(name,value);};
-    labels.setAttribute=(name,value)=>{labelWrites++;setLabels(name,value);};
-    svg.dispatchEvent(new w.MouseEvent('mousedown',{view:w,bubbles:true,cancelable:true,clientX:100,clientY:100,button:0}));
-    for(let step=1;step<=20;step++)w.dispatchEvent(new w.MouseEvent('mousemove',{view:w,bubbles:true,cancelable:true,clientX:100+step*2,clientY:100+step,buttons:1}));
-    assert.equal(frames.size,1);assert.equal(transformWrites,0);assert.ok(svg.classList.contains('is-moving'));
-    assert.ok(paths.some((node,index)=>node.getAttribute('d')!==original[index]));
-    [...frames.values()][0]();assert.equal(transformWrites,1);assert.equal(labelWrites,0);
-    w.dispatchEvent(new w.MouseEvent('mouseup',{view:w,bubbles:true,cancelable:true,clientX:140,clientY:120,button:0}));
-    assert.ok(!svg.classList.contains('is-moving'));assert.equal(frames.size,0);
-    assert.deepEqual(paths.map(node=>node.getAttribute('d')),original);
-    assert.equal(labelWrites,0);assert.match(group.getAttribute('transform'),/translate\(40,20\)/);
+    const dispatch=(type,id,x,y)=>stage.dispatchEvent(new w.PointerEvent(type,{pointerId:id,clientX:x,clientY:y,bubbles:true,button:0}));
+    const read=()=>d.querySelector('.earth-readout').textContent;
+    const before=read();
+    dispatch('pointerdown',1,170,180);
+    for(let i=1;i<=20;i++)dispatch('pointermove',1,170+i*2,180+i);
+    assert.equal(frames.size,1);assert.equal(read(),before);
+    dispatch('pointerup',1,210,200);
+    assert.notEqual(read(),before);
+    stage.dispatchEvent(new w.MouseEvent('click',{bubbles:true,clientX:210,clientY:200}));
+    assert.equal(d.querySelector('#selection-dock').hidden,true);
+    const radius=()=>+d.querySelector('.earth-surface circle').getAttribute('r');
+    const initial=radius();
+    dispatch('pointerdown',2,145,180);dispatch('pointerdown',3,245,180);
+    dispatch('pointermove',2,130,180);dispatch('pointermove',3,260,180);
+    dispatch('pointerup',2,130,180);dispatch('pointerup',3,260,180);
+    assert.ok(Math.abs(radius()/initial-1.3)<.001);
+    assert.equal(d.querySelector('#selection-dock').hidden,true);
   }finally{await w.happyDOM.abort();f.db.close();}
 });
 
-test('city labels grow and shrink during a pinch, keep selected labels, and export at the displayed size', async () => {
-  const f = fixture();
-  const w = await openApp(f, { configure(w) {
-    Object.defineProperty(w.navigator, 'maxTouchPoints', { value: 2 });
-  } });
-  const d = w.document, svg = d.querySelector('.map-svg');
-  try {
-    svg.getBoundingClientRect = () => ({ left: 0, top: 0, width: 390, height: 356 });
-    svg.createSVGPoint = () => ({ x: 0, y: 0, matrixTransform() { return {x: this.x, y: this.y}; } });
-    svg.getScreenCTM = () => ({ inverse: () => ({}) });
-    searchAndSelect(w, '330100');
-    const names = svg.querySelector('.city-labels');
-    const selected = [...names.children].find(n => n.textContent === '杭州市');
-    assert.ok(selected);
-    const pixelSize = () => Number(names.getAttribute('font-size')) * svg.__zoom.k * 390 / 720;
-    const startSize = pixelSize();
-    const startZoom = svg.__zoom.k;
-    const touches = distance => [-1, 1].map((sign, i) => ({
-      identifier: i, clientX: 470 + sign * distance / 2, clientY: 330, target: svg
-    }));
-    function pinch(type, active, changed = active) {
-      const event = new w.Event(type, { bubbles: true, cancelable: true });
-      Object.assign(event, { touches: active, changedTouches: changed });
-      svg.dispatchEvent(event);
-    }
-    pinch('touchstart', touches(100));
-    let previous = startSize;
-    for (const distance of [107, 114, 121]) {
-      pinch('touchmove', touches(distance));
-      await until(() => svg.querySelector(':scope > g').getAttribute('transform') === svg.__zoom.toString());
-      assert.ok(svg.classList.contains('is-moving'));
-      assert.ok(pixelSize() > previous + .1 && pixelSize() < previous + .4);
-      assert.ok(selected.isConnected, 'the focused label is reused during the gesture');
-      previous = pixelSize();
-    }
-    pinch('touchmove', touches(100));
-    await until(() => Math.abs(pixelSize() - startSize) < .005);
-    pinch('touchend', [], touches(100));
-    assert.ok(Math.abs(svg.__zoom.k - startZoom) < .001);
-    assert.ok(names.children.length > 1 && names.children.length < 80);
-    const rects = [...names.children].map(node => {
-      const [x, y] = svg.__zoom.apply([+node.getAttribute('x'), +node.getAttribute('y')]);
-      const px = (x - 110) * 390 / 720, py = (y - 25) * 390 / 720 + (356 - 610 * 390 / 720) / 2;
-      const half = node.textContent.length * pixelSize() / 2;
-      return [px - half, py - pixelSize(), px + half, py + 2];
-    });
-    for (const [i, a] of rects.entries()) {
-      assert.ok(a[0] >= 0 && a[1] >= 0 && a[2] <= 390 && a[3] <= 356);
-      for (const b of rects.slice(i + 1)) assert.ok(a[2] < b[0] || b[2] < a[0] || a[3] < b[1] || b[3] < a[1]);
-    }
-    const image = createMapSnapshot(d.querySelector('.map-card'), {count: 0, total: 370, provinces: 0});
-    const vector = new w.DOMParser().parseFromString(image.svg, 'image/svg+xml');
-    assert.equal(vector.querySelector('.map-city-label').getAttribute('font-size'), names.getAttribute('font-size'));
-  } finally { await w.happyDOM.abort(); f.db.close(); }
-});
-
-test('rapid zoom button presses accumulate and reset returns to the national view', async () => {
-  const f = fixture(), w = await openApp(f), d = w.document;
-  try {
-    const svg = d.querySelector('.map-svg');
-    d.querySelector('[data-map="plus"]').click();
-    d.querySelector('[data-map="plus"]').click();
-    await until(() => svg.__zoom.k > 1 && svg.__zoom.k < 2.55);
-    await until(() => Math.abs(svg.__zoom.k - 2.56) < .00001 && !svg.classList.contains('is-moving'));
-    d.querySelector('[data-map="reset"]').click();
-    await until(() => svg.__zoom.k === 1 && !svg.classList.contains('is-moving'));
-    assert.deepEqual([svg.__zoom.x, svg.__zoom.y], [0, 0]);
-  } finally { await w.happyDOM.abort(); f.db.close(); }
+test('search focuses the real Macau shape, labels it, and tapping inside toggles the existing selection',async()=>{
+  const f=fixture(),w=await openApp(f),d=w.document;
+  try{
+    searchAndSelect(w,'820000');
+    const stage=d.querySelector('.map-stage'), svg=d.querySelector('.map-svg');
+    const [, ,width,height]=svg.getAttribute('viewBox').split(' ').map(Number);
+    assert.ok(+svg.querySelector('.earth-surface circle').getAttribute('r')>width*100);
+    assert.match(svg.querySelector('[data-label-region="820000"]').textContent,/澳门/);
+    await until(()=>svg.querySelector('.earth-surface [data-city="820000"]'));
+    const region=catalog(worldAtlas).cities.find(c=>c.id==='820000');
+    const f=frame({lon:region.focusLon,lat:region.focusLat,zoom:1.4/(Math.PI/180*region.focusSpan)},width,height);
+    const [x,y]=project(region.v,f);
+    stage.dispatchEvent(new w.MouseEvent('click',{bubbles:true,clientX:x,clientY:y}));
+    assert.equal(d.querySelector('#selection-dock').hidden,true);
+    stage.dispatchEvent(new w.MouseEvent('click',{bubbles:true,clientX:x,clientY:y}));
+    assert.match(d.querySelector('#selection-dock').textContent,/澳门/);
+  }finally{await w.happyDOM.abort();f.db.close();}
 });

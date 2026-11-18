@@ -2,11 +2,9 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { fixture,input } from './helpers.mjs';
 import { recordsForView,cityAppearance,cleanLayers } from '../src/profiles.js';
-import { openApp,until,typeQuery } from './ui-harness.mjs';
-import { createMapSnapshot } from '../src/export.js';
+import { openApp,until,typeQuery,tapRegion as tap } from './ui-harness.mjs';
 const write=(f,token,profile,id,body)=>f.request(`/api/profiles/${profile}/cities/${id}`,{method:'PUT',headers:{Authorization:`Bearer ${token}`},body:JSON.stringify(body)});
 const batch=(f,token,profile,updates)=>f.request(`/api/profiles/${profile}/cities/batch`,{method:'POST',headers:{Authorization:`Bearer ${token}`},body:JSON.stringify({updates})});
-function tap(w,id){w.document.querySelector(`.map-svg [data-city="${id}"]`).dispatchEvent(new w.MouseEvent('click',{bubbles:true}));}
 test('joint history remains compatible and all joint cities are inherited by both personal views',async()=>{
   const f=fixture(),token=await f.session();
   try{
@@ -65,9 +63,6 @@ test('three buttons highlight their category; clicking the current one gives a r
     tap(w,'330200');assert.equal(d.querySelector('#selection-dock [data-action="edit"]'),null);
     d.querySelector('[data-action="view-records"]').click();assert.equal(d.querySelector('#visit-form'),null);
     assert.match(d.querySelector('.record-list').textContent,/暂无点亮记录/);
-    const snapshot=createMapSnapshot(d.querySelector('.map-card'),{count:4,total:370,provinces:4},{view:'all'});
-    assert.match(snapshot.svg,/完整视图/);assert.match(snapshot.svg,/url\(#personal-both\)/);assert.match(snapshot.svg,/#9ed9c5/);assert.match(snapshot.svg,/#bccdf3/);
-    assert.match(snapshot.svgFilename,/完整/);
   }finally{await w.happyDOM.abort();f.db.close();}
 });
 test('a personal note on an inherited joint city can be saved and undone without modifying the joint record',async()=>{
@@ -112,9 +107,9 @@ test('search and the read-only city sheet show the right notes across profiles, 
     d.querySelector('[data-close]').click();
     tap(w, '330200');
     d.querySelector('[data-view="xi"]').click();
-    assert.equal(d.querySelectorAll('.map-svg .is-selected').length, 2);
+    assert.match(d.querySelector('#selection-dock').textContent,/已选 2 个地区/);
     d.querySelector('#selection-dock [data-action="edit"]').click();
-    assert.match(d.querySelector('#dialog-title').textContent, /点亮 1 个城市/);
+    assert.match(d.querySelector('#dialog-title').textContent, /点亮 1 个地区/);
     const state = await (await f.request('/api/state')).json();
     assert.equal(state.layers.xi['330200'].active, false);
   } finally { await w.happyDOM.abort(); f.db.close(); }

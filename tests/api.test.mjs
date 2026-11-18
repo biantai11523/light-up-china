@@ -1,6 +1,24 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { fixture,input } from './helpers.mjs';
+test('Chinese and overseas regions share profile-aware writes, atomic batches and version checks',async()=>{
+  const f=fixture(), token=await f.session();
+  const headers={Authorization:`Bearer ${token}`};
+  try{
+    assert.equal((await f.write(token,'820000',input({note:'澳门'}))).status,200);
+    const id='ne-USA-3521', other='ne-JPN-1860';
+    const both=[id,other].map(id=>({id,...input()}));
+    const post=()=>f.request('/api/profiles/xi/cities/batch',{method:'POST',headers,body:JSON.stringify({updates:both})});
+    assert.equal((await post()).status,200);assert.equal((await(await post()).json()).idempotent,true);
+    assert.equal((await f.request('/api/profiles/xi/cities/'+id,{method:'PUT',headers,body:JSON.stringify(input())})).status,409);
+    assert.equal((await f.write(token,'ne-VAT-p00-q',input())).status,200);
+    assert.equal((await f.write(token,'ne-UNKNOWN-12345',input())).status,400);
+    const result=await(await f.request('/api/state')).json();
+    assert.equal(result.records['820000'].active,true);
+    assert.equal(result.layers.xi[id].active,true);assert.equal(result.layers.xi[other].version,1);
+    assert.equal(result.layers.together[id],undefined);
+  }finally{f.db.close();}
+});
 test('two independent visitors see the same persisted city and can undo',async()=>{
  const f=fixture(),a=await f.session(),b=await f.session();
  assert.notEqual(a,b);

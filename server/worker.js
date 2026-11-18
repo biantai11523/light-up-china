@@ -51,7 +51,7 @@ export function createWorker(validCityIds) {
           const stored=updates.map(row=>({...row,id:storageCity(profile,row.id)}));
           return await saveBatch(env.DB,stored,(body,status)=>json(decodeWrite(body,profile),status));
         }
-        const match=pathname.match(/^\/api\/cities\/(\d{6})$/);
+        const match=pathname.match(/^\/api\/cities\/([A-Za-z0-9-]+)$/);
         if(match && request.method==='PUT') {
           if(!await authenticated(request,env))return json({error:'会话已过期，请重试'},401);
           if(!validCities.has(match[1]))return json({error:'找不到这个城市'},400);
