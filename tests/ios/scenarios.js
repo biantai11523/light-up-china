@@ -125,10 +125,13 @@
       await capture('country');
       document.querySelector('[data-action="export-map"]').click();
       await waitFor(()=>document.querySelector('[data-save-svg]') && lastVector);
-      const national=new DOMParser().parseFromString(await lastVector.text(),'image/svg+xml');
-      if(national.querySelector('[data-boundary="prefecture"]') || !national.querySelector('[data-boundary="province"]'))
-        throw Error('Unexpected boundary hierarchy at national scale');
-      report.nationalBoundaries=[...national.querySelectorAll('[data-boundary]')].map(n=>n.getAttribute('data-boundary'));
+      const world=new DOMParser().parseFromString(await lastVector.text(),'image/svg+xml');
+      const plate=world.documentElement;
+      if(plate.getAttribute('data-projection')!=='mercator' || plate.getAttribute('data-central-meridian')!=='150' ||
+        !world.querySelector('[data-country="CHN"]') || !world.querySelector('[data-country="BRA"]') ||
+        world.querySelector('[data-boundary="province"],[data-boundary="prefecture"],svg svg') ||
+        world.querySelector('desc')?.textContent.includes('概览边界'))throw Error('Expected the full-bleed world print map');
+      report.worldViewBox=plate.getAttribute('viewBox');
       document.querySelector('[data-close]').click();
 
       // Reproduce a rim grab that used to jump from the north pole to a
@@ -167,6 +170,18 @@
     if(sample==='candidate' && pass==='1')await capture('macau');
     document.querySelector('[data-action="export-map"]').click();
     await waitFor(()=>document.querySelector('[data-save-svg]'));
+    if(sample==='candidate'){
+      const world=new DOMParser().parseFromString(await lastVector.text(),'image/svg+xml');
+      if(!world.querySelector('[data-pin="820000"]') || !world.querySelector('[data-country="BRA"]') ||
+        world.querySelector('[data-city="820000"]')?.getAttribute('fill')!=='#ff976f')throw Error('Missing Macau or the opposite hemisphere');
+      if(report.worldViewBox && world.documentElement.getAttribute('viewBox')!==report.worldViewBox)throw Error('Export follows the local camera');
+      await waitFor(()=>!document.querySelector('[data-save-png]').disabled || !document.querySelector('[data-export-error]').hidden);
+      if(document.querySelector('[data-save-png]').disabled)throw Error(document.querySelector('[data-export-error]').textContent);
+      const photo=document.querySelector('.export-preview img');
+      await photo.decode();
+      report.worldPng=[photo.naturalWidth,photo.naturalHeight];
+      if(photo.naturalWidth!==4096 || photo.naturalHeight!==Number(world.documentElement.getAttribute('height')))throw Error('Unexpected PNG dimensions');
+    }
     report.exportReady=true;report.workerProjections=projections;report.glyphBatches=glyphBatches;report.contextEvents=contextEvents;
     if(fallback && (report.renderer!=='svg'||!projections))throw Error('SVG worker fallback did not run');
     return report;

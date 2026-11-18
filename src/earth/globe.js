@@ -2,7 +2,8 @@ import { frame, HOME, MAX_ZOOM, clamp, dot, unproject, RAD } from './camera.js';
 import { contains } from './mesh.js';
 import { globeGPU } from './webgl.js';
 import { globeControls } from './gestures.js';
-import { globeDefs, labelsFor, labelMarkup, vectorSurface } from './drawing.js';
+import { globeDefs } from './drawing.js';
+import { prepareWorldMap } from './world-print.js';
 import { cityAppearance } from '../profiles.js';
 import { glyphLayer, labelTracker } from './label-layer.js';
 import { vectorDisplay } from './vector-display.js';
@@ -216,17 +217,9 @@ export function createGlobe(container,data,onSelect){
       vectors.invalidate();labelsDirty=sceneDirty=true;finish();flush();
     },
     reset(){controls.stop();view={...HOME};vectors.invalidate();labelsDirty=sceneDirty=true;finish();flush();},
-    async prepareExport(){
-      controls.stop();clearTimeout(detailTimer);moving=false;stage.classList.remove('is-moving');measure();
-      const f=camera(),selection=new Set(selected),colors=new Map(paints);
-      const detail=await data.loadDetail(f,{hold:true});sceneDirty=true;flush();
-      let svg;
-      if(data.projectFrame){
-        try{svg=await data.projectFrame(f,detail.tiles,colors,selection,false,0);}catch{}
-      }
-      svg??=vectorSurface(data,f,detail.tiles,colors,selection);
-      return {width:f.width,height:f.height,coarse:detail.coarse,body:'<defs>'+globeDefs+'</defs>'+svg+
-        labelsFor(data,f,selection,colors).map(l=>labelMarkup(l,colors,selection)).join('')};
+    prepareExport(){
+      if (moving) { controls.stop(); finish(); }
+      return prepareWorldMap(data, paints, selected);
     },
     get interacting(){return moving || controls.interacting;},
     get camera(){return camera();}

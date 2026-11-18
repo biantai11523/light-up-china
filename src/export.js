@@ -1,11 +1,11 @@
 import { escapeHtml } from './store.js';
-import { PROFILES } from './profiles.js';
+import { PROFILES, PROFILE_PATTERNS } from './profiles.js';
+import { CENTRAL_MERIDIAN, NORTH, SOUTH } from './earth/mercator.js';
 
 const FONT = "'PingFang SC','Microsoft YaHei','Noto Sans CJK SC',sans-serif";
-const COLORS = { ink: '#252a24', paper: '#f6f5ed', unlit: '#f8f7ef', green: '#c5f567', selected: '#ff976f' };
 
 export function exportDimensions(width, height, longEdge = 4096) {
-  const maxPixels = 12000000;
+  const maxPixels = 14000000;
   const scale = Math.min(longEdge / Math.max(width, height), Math.sqrt(maxPixels / (width * height)));
   let pixelWidth = Math.max(1, Math.round(width * scale));
   let pixelHeight = Math.max(1, Math.round(height * scale));
@@ -16,34 +16,19 @@ export function exportDimensions(width, height, longEdge = 4096) {
   return { pixelWidth, pixelHeight };
 }
 
-export function createMapSnapshot(globe, summary, { date = new Date(), demo = false, offline = false, view = 'together' } = {}) {
-  const { width, height: stageHeight, body } = globe;
-  const height = stageHeight + 150;
-  const { pixelWidth, pixelHeight } = exportDimensions(width, height);
+export function createMapSnapshot(map, { date = new Date(), demo = false, offline = false, view = 'together' } = {}) {
+  const {width, height, body} = map;
+  const {pixelWidth, pixelHeight} = exportDimensions(width, height);
   const day = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
-  const stamp = `${demo ? '示例 · ' : ''}${offline ? '离线缓存 · ' : ''}${globe.coarse ? '概览边界 · ' : ''}${day}`;
-  const legendY = stageHeight + 103;
-  const viewName=view==='all'?'完整视图':PROFILES[view].label;
-  const legend=[{label:'一起',fill:PROFILES.together.color},{label:'轩宝',fill:PROFILES.xuan.color},{label:'曦宝',fill:PROFILES.xi.color},{label:'分别去过',fill:'url(#personal-both)'},{label:'未去过',fill:COLORS.unlit},{label:'选中',fill:COLORS.selected}];
-  // Give the SVG its final pixel dimensions before image decoding. Drawing a
-  // phone-sized SVG image onto a larger canvas can otherwise blur in some engines.
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${pixelWidth}" height="${pixelHeight}" viewBox="0 0 ${width} ${height}" font-family="${escapeHtml(FONT)}" shape-rendering="geometricPrecision" text-rendering="geometricPrecision">
-
-    <rect width="${width}" height="${height}" fill="${COLORS.paper}"/>
-    <rect x="0" y="0" width="${width}" height="84" fill="#fffef8"/>
-    <text x="16" y="29" font-size="19" font-weight="800" fill="${COLORS.ink}">${viewName}</text>
-    <text x="16" y="49" font-size="10" fill="#666d60">${escapeHtml(stamp)}</text>
-    <text x="16" y="70" font-size="11" fill="${COLORS.ink}">${view==='all'?'全部':'当前分类'} ${summary.count} / ${summary.total} 个地区 · ${summary.countries || 0} 个国家和地区</text>
-    <rect y="84" width="${width}" height="${stageHeight}" fill="${COLORS.paper}"/>
-    <svg x="0" y="84" width="${width}" height="${stageHeight}" viewBox="0 0 ${width} ${stageHeight}" overflow="hidden">${body}</svg>
-    <text x="${width-24}" y="102" font-size="9" text-anchor="middle" fill="${COLORS.ink}">N</text>
-    <path d="M${width-24} 109 l-4 14 8 0 Z" fill="${COLORS.ink}"/>
-    <path d="M0 84H${width}M0 ${stageHeight + 84}H${width}" stroke="${COLORS.ink}" stroke-width="1.5"/>
-    ${legend.map(({fill,label},index)=>{const col=index%3,row=Math.floor(index/3),x=16+col*((width-32)/3),y=legendY+row*20;return `<rect x="${x}" y="${y-8}" width="10" height="10" fill="${fill}" stroke="${COLORS.ink}" stroke-width=".7"/><text x="${x+16}" y="${y+1}" font-size="9" fill="${COLORS.ink}">${label}</text>`;}).join('')}
-    <text x="16" y="${height - 9}" font-size="8" fill="#757d6d">边界：DataV.GeoAtlas / Natural Earth</text>
+  const stamp = [demo && '示例', offline && '离线缓存', map.coarse && '概览边界', day].filter(Boolean).join(' · ');
+  const viewName = view === 'all' ? '完整视图' : PROFILES[view].label;
+  // Metadata travels with the file. Every visible pixel belongs to the map.
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="${pixelWidth}" height="${pixelHeight}" viewBox="0 0 ${width} ${height}" data-projection="mercator" data-central-meridian="${CENTRAL_MERIDIAN}" data-view="${view}" font-family="${escapeHtml(FONT)}" shape-rendering="geometricPrecision" text-rendering="geometricPrecision">
+    <title>${viewName} · 世界足迹地图</title><desc>${stamp}。墨卡托投影，中央经线 ${CENTRAL_MERIDIAN}°E，${NORTH}°N 至 ${Math.abs(SOUTH)}°S。边界来自 DataV.GeoAtlas / Natural Earth。</desc>
+    <defs>${PROFILE_PATTERNS}</defs>${body}
   </svg>`;
-  const name = `足迹地球-${view==='all'?'完整':PROFILES[view].short}-${demo ? '示例-' : ''}${day}`;
-  return { svg, width, height, pixelWidth, pixelHeight, filename: `${name}.png`, svgFilename: `${name}.svg` };
+  const name = `世界足迹地图-${view === 'all' ? '完整' : PROFILES[view].short}-${demo ? '示例-' : ''}${day}`;
+  return {svg, width, height, pixelWidth, pixelHeight, coarse:map.coarse, filename:`${name}.png`, svgFilename:`${name}.svg`};
 }
 
 export function createMapSvgBlob(snapshot) {

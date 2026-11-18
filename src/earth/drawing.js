@@ -1,5 +1,4 @@
 import { geoArea, geoGraticule, geoOrthographic, geoPath } from 'd3-geo';
-import { escapeHtml as esc } from '../store.js';
 import { PROFILE_PATTERNS } from '../profiles.js';
 import { clamp, dot, intersects, project, RAD, unit } from './camera.js';
 import { polygon } from './mesh.js';
@@ -48,7 +47,7 @@ export function labelsFor(data,f,selected,paints,previous) {
       if(selected.has(c.id)||paints.has(c.id))return;
       const span=c.span*RAD*f.radius;
       const micro=c.span<.30 && f.zoom>=5;
-      if(!micro && c.countryId==='CHN' && opacity[PREFECTURE]<.025)return;
+      if(!micro && opacity[PREFECTURE]<.025)return;
       if(micro || span>Math.max(14,62-3*f.zoom))add(c,micro?2:5);
     });
   }
@@ -66,12 +65,6 @@ export function labelsFor(data,f,selected,paints,previous) {
     }
   }
   return placed;
-}
-export function labelMarkup(label, paints, selected) {
-  const {item,x,y,size,pin,tx,ty,text,emphasis}=label;
-  const fill=selected.has(item.id)?'#ff976f':paints.get(item.id)?.fill||'#fffef8';
-  return (pin?`<circle cx="${x.toFixed(2)}" cy="${y.toFixed(2)}" r="3.1" fill="${fill}" stroke="#252a24" stroke-width="1.35"/>`:'')+
-    `<text x="${tx.toFixed(2)}" y="${ty.toFixed(2)}" font-size="${size.toFixed(2)}" font-weight="${emphasis||item.type==='country'?700:500}" text-anchor="middle" fill="#30392b" stroke="#f8f7ef" stroke-width="2.2" stroke-linejoin="round" paint-order="stroke">${esc(text)}</text>`;
 }
 function geometryFor(s, moving) {
   const full=polygon(s);

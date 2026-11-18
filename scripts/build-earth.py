@@ -12,6 +12,7 @@ import json
 import math
 import re
 import struct
+import subprocess
 
 import mapbox_earcut
 import numpy as np
@@ -267,4 +268,5 @@ for key, items in packets.items():
     bounds[key] = [float(boxes[:,0].min()),float(boxes[:,1].min()),float(boxes[:,2].max()),float(boxes[:,3].max())]
 catalog = dict(version=1, regions=regions, countries=countries, provinces=provinces, base=base, detail=files, bounds=bounds)
 (OUT/"atlas.json").write_text(json.dumps(catalog, ensure_ascii=False,separators=(",",":")), encoding="utf8")
+subprocess.run(["node", str(ROOT / "scripts/build-print.mjs")], check=True)
 print("Overview bytes:",(OUT/base).stat().st_size,"Fine bytes:",sum((OUT/p).stat().st_size for p in files.values()), flush=True)

@@ -11,7 +11,7 @@ const raw=JSON.parse(readFileSync('public/data/earth/atlas.json'));
 const atlas=catalog(raw), coarse=decodePacket(readFileSync('public/data/earth/'+raw.base),atlas.layout);
 const view=k=>frame({lon:115,lat:32,zoom:k},402,406);
 
-test('a national, provincial and city close-up have distinct borders in the actual exported SVG',()=>{
+test('national, provincial and city scales have distinct borders on the interactive globe',()=>{
   const id='330100', marks=new Map(), selected=new Set([id]);
   const outline=(s,name)=>s.match(new RegExp('data-boundary="'+name+'"[^>]*stroke-opacity="([\\d.]+)"'))?.[1];
   const at=k=>vectorSurface(atlas,view(k),coarse,marks,selected);
@@ -28,13 +28,26 @@ test('a national, provincial and city close-up have distinct borders in the actu
   assert.ok(Math.abs(+outline(near,'prefecture')-boundaryOpacity(view(12))[PREFECTURE])<1e-5);
   const index=id=>atlas.cities.find(c=>c.id===id).idx;
   assert.equal(atlas.layout.edges[index(id)],PREFECTURE);
-  assert.equal(atlas.layout.edges[index('ne-USA-3521')],PROVINCE);
+  assert.equal(atlas.layout.edges[index('ne-USA-3521')],PREFECTURE);
   assert.equal(atlas.layout.edges[index('820000')],NO_BORDER);
   assert.equal(atlas.layout.edges[atlas.cities.length],PROVINCE);
   assert.equal(atlas.layout.edges[atlas.cities.length+atlas.provinces.length],COUNTRY);
   // Same map scale on two screens: backing-store pixels must not control the fade.
   assert.deepEqual(boundaryOpacity(frame({lon:0,lat:0,zoom:12},402,406)),
     boundaryOpacity(frame({lon:0,lat:0,zoom:6},804,812)));
+});
+
+test('foreign states fade in at the same map scale as Chinese prefectures',()=>{
+  const id='ne-USA-3521';
+  const westernUS=z=>vectorSurface(atlas,frame({lon:-116,lat:36,zoom:z},402,406),coarse,new Map(),new Set([id]));
+  const atCountry=westernUS(4), atRegion=westernUS(12);
+  assert.ok(atCountry.includes('data-city="'+id+'"'));
+  assert.doesNotMatch(atCountry,/data-boundary="(?:province|prefecture)"/);
+  assert.doesNotMatch(atRegion,/data-boundary="province"/);
+  const opacity=s=>Number(s.match(/data-boundary="prefecture"[^>]*stroke-opacity="([\d.]+)"/)?.[1]);
+  const china=vectorSurface(atlas,view(12),coarse,new Map(),new Set());
+  assert.ok(opacity(atRegion)>0);
+  assert.equal(opacity(atRegion),opacity(china));
 });
 
 test('a grabbed point tracks a moving pinch midpoint across the date line and at high latitude',()=>{

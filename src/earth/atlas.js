@@ -1,4 +1,5 @@
 import { decodePacket, batchOverview } from './mesh.js';
+import { gunzipSync, strFromU8 } from 'fflate';
 import { unit, intersects } from './camera.js';
 import { meshLayout } from './boundaries.js';
 import { indexLabels } from './drawing.js';
@@ -17,8 +18,8 @@ export function catalog(raw) {
   const features=[...cities,...provinces,...countries];
   return {cities,countries,provinces,features,raw,layout:meshLayout(raw),visitLabels:indexLabels(features,cities)};
 }
-async function readAsset(url, type = 'arrayBuffer'){
-  const controller=new AbortController(), timer=setTimeout(()=>controller.abort(),18000);
+async function readAsset(url, type = 'arrayBuffer', timeout = 18000){
+  const controller=new AbortController(), timer=setTimeout(()=>controller.abort(),timeout);
   try {
     const r=await fetch(url,{signal:controller.signal});
     if(!r.ok)throw new Error('边界数据加载失败');
@@ -29,6 +30,20 @@ async function readAsset(url, type = 'arrayBuffer'){
 export async function loadEarth() {
   const root=dataRoot();
   const data=catalog(await readAsset(new URL('atlas.json',root), 'json'));
+  const printFiles = new Map();
+  data.readPrintFile = name => {
+    if (!printFiles.has(name)) {
+      const pending = readAsset(new URL(name, root), 'arrayBuffer', 8000).then(async bytes => {
+        if (typeof DecompressionStream === 'function') {
+          const stream = new Response(bytes).body.pipeThrough(new DecompressionStream('gzip'));
+          return new Response(stream).json();
+        }
+        return JSON.parse(strFromU8(gunzipSync(new Uint8Array(bytes))));
+      }).catch(error => { printFiles.delete(name); throw error; });
+      printFiles.set(name, pending);
+    }
+    return printFiles.get(name);
+  };
   let worker, sequence=0, suppliedIds=false, closed=false;
   const jobs=new Map();
   try {
@@ -39,6 +54,7 @@ export async function loadEarth() {
     }
   } catch { worker=null; }
   data.dispose=()=>{
+    printFiles.clear();
     closed=true;worker?.terminate();worker=null;data.projectFrame=null;
     for(const job of jobs.values())job.reject(new Error('Map closed'));
     jobs.clear();
@@ -70,7 +86,7 @@ export async function loadEarth() {
     low[i].shared=data.overview;
     low[i].slice=data.overview.slices[i];
   }
-  const stored = new Map(), jobsByKey = new Map(), retryAt = new Map(), pinned = new Map();
+  const stored = new Map(), jobsByKey = new Map(), retryAt = new Map();
   const coarseByKey = new Map(low.map(t=>[t.key,t]));
   let wanted = new Set(), active = 0;
   data.onDetail = () => {};
@@ -83,13 +99,12 @@ export async function loadEarth() {
     if(fine) fine.seen=performance.now();
     return fine||t;
   });
-  data.detailReady = f => f.zoom<3 || visibleBase(f).every(t=>stored.has(t.key));
 
   function trim() {
     let bytes=0;
     for(const t of stored.values())bytes+=t.bytes;
     if(stored.size<=16 && bytes<=48*1024*1024)return;
-    const old=[...stored.values()].filter(t=>!wanted.has(t.key)&&!pinned.has(t.key)).sort((a,b)=>a.seen-b.seen);
+    const old=[...stored.values()].filter(t=>!wanted.has(t.key)).sort((a,b)=>a.seen-b.seen);
     for(const t of old){
       if(stored.size<=16 && bytes<=48*1024*1024)break;
       stored.delete(t.key);bytes-=t.bytes;worker?.postMessage({type:'evict',key:t.key});data.onEvict(t);
@@ -112,19 +127,18 @@ export async function loadEarth() {
   }
   function pump() {
     for(const [key,job] of jobsByKey){
-      if(!job.started && !wanted.has(key) && !pinned.has(key)){jobsByKey.delete(key);job.resolve(false);}
+      if(!job.started && !wanted.has(key)){jobsByKey.delete(key);job.resolve(false);}
     }
     if(closed || active>=3)return;
     const waiting=[...jobsByKey.values()].filter(job=>!job.started).sort((a,b)=>a.distance-b.distance);
     for(const job of waiting){if(active>=3)break;start(job);}
   }
-  data.loadDetail = async(f,{hold=false}={})=>{
+  data.loadDetail = async f=>{
     const tiles=f.zoom>=3 ? visibleBase(f) : [];
-    if(!hold)wanted=new Set(tiles.map(t=>t.key));
+    wanted=new Set(tiles.map(t=>t.key));
     const promises=[];
     for(const t of tiles){
       const key=t.key;
-      if(hold)pinned.set(key,(pinned.get(key)||0)+1);
       if(stored.has(key)||(retryAt.get(key)||0)>Date.now())continue;
       if(!jobsByKey.has(key)){
         let resolve;
@@ -137,16 +151,9 @@ export async function loadEarth() {
       promises.push(job.promise);
     }
     pump();
-    try{
-      const changed=(await Promise.all(promises)).some(Boolean);
-      return hold ? {tiles:data.visible(f), coarse:!data.detailReady(f)} : changed;
-    }
-    finally{
-      if(hold)for(const {key} of tiles){
-        const n=pinned.get(key)-1;if(n)pinned.set(key,n);else pinned.delete(key);
-      }
-      trim();
-    }
+    const changed=(await Promise.all(promises)).some(Boolean);
+    trim();
+    return changed;
   };
   data.low=low;
   return data;

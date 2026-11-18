@@ -1,5 +1,5 @@
 // Rendering categories are independent of the unit the user can select.
-// An overseas state and a Chinese province use the same cartographic scale.
+// Foreign subdivisions and Chinese prefectures share the close-up tier.
 export const PREFECTURE = 0;
 export const PROVINCE = 1;
 export const COUNTRY = 2;
@@ -13,7 +13,7 @@ export function meshLayout(atlas) {
   for (const row of atlas.regions) counts.set(row[3], (counts.get(row[3]) || 0) + 1);
   atlas.regions.forEach(([id, , , country, province], i) => {
     if (country === 'CHN') edges[i] = province === id ? NO_BORDER : PREFECTURE;
-    else edges[i] = counts.get(country) === 1 ? NO_BORDER : PROVINCE;
+    else edges[i] = counts.get(country) === 1 ? NO_BORDER : PREFECTURE;
   });
   edges.fill(PROVINCE, regions, regions + provinces);
   edges.fill(COUNTRY, regions + provinces);
