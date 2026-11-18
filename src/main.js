@@ -423,11 +423,13 @@ async function exportModal() {
   }
   if (!sheet.isConnected) return;
   const svgUrl = URL.createObjectURL(createMapSvgBlob(snapshot));
-  root.querySelector('.sheet-content').innerHTML = `<div class="export-content"><div class="export-preview"><img src="${svgUrl}" alt="太平洋版世界足迹地图" width="${snapshot.pixelWidth}" height="${snapshot.pixelHeight}"></div><div class="export-meta"><span data-export-format>正在生成高清 PNG…</span><span>${snapshot.coarse ? '概览边界 · ' : ''}墨卡托投影 · 太平洋版</span></div><div class="export-downloads"><button class="btn btn-primary" data-save-png disabled>${icon('download')}高清 PNG</button><button class="btn" data-save-svg>${icon('download')}矢量 SVG</button></div><p class="export-help">SVG 可无损放大，PNG 可保存到相册。</p><p class="form-error" data-export-error role="alert" hidden></p><button class="btn" data-retry-export hidden>重试 PNG</button></div>`;
+  root.querySelector('.sheet-content').innerHTML = `<div class="export-content"><div class="export-preview"><img alt="太平洋版世界足迹地图" width="${snapshot.pixelWidth}" height="${snapshot.pixelHeight}"></div><div class="export-meta"><span data-export-format>正在生成高清 PNG…</span><span>${snapshot.coarse ? '概览边界 · ' : ''}墨卡托投影 · 太平洋版</span></div><div class="export-downloads"><button class="btn btn-primary" data-save-png disabled>${icon('download')}高清 PNG</button><button class="btn" data-save-svg>${icon('download')}矢量 SVG</button></div><p class="export-help">SVG 可无损放大，PNG 可保存到相册。</p><p class="form-error" data-export-error role="alert" hidden></p><button class="btn" data-retry-export hidden>重试 PNG</button></div>`;
+  const preview = root.querySelector('.export-preview img');
   const controller = new AbortController();
   let previewUrl = null;
   addModalCleanup(() => {
     controller.abort();
+    preview.removeAttribute('src');
     const urls = [svgUrl,previewUrl].filter(Boolean);
     setTimeout(() => urls.forEach(url=>URL.revokeObjectURL(url)),60000);
   });
@@ -441,13 +443,12 @@ async function exportModal() {
     errorMessage.hidden = true;retry.hidden = true;
     root.querySelector('[data-export-format]').textContent='正在生成高清 PNG…';
     try {
-      const blob = await renderMapPng(snapshot, { signal: controller.signal });
+      const blob = await renderMapPng(snapshot, { image: preview, svgUrl, signal: controller.signal });
       if (!sheet.isConnected) return;
       previewUrl = URL.createObjectURL(blob);
       const file = typeof File === 'function' ? new File([blob], snapshot.filename, { type: 'image/png' }) : null;
       let canShare = false;
       try { canShare = !!file && typeof navigator.share === 'function' && !!navigator.canShare?.({ files: [file] }); } catch { /* Download remains available. */ }
-      const preview = root.querySelector('.export-preview img');
       preview.src=previewUrl;preview.alt='太平洋版世界足迹地图 PNG 预览';
       root.querySelector('[data-export-format]').textContent=`PNG · ${snapshot.pixelWidth} × ${snapshot.pixelHeight}`;
       root.querySelector('[data-save-png]').disabled=false;

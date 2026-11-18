@@ -50,6 +50,13 @@
       await sleep(50);
     }
   }
+  async function pngDimensions() {
+    await waitFor(()=>!document.querySelector('[data-save-png]').disabled || !document.querySelector('[data-export-error]').hidden);
+    if(document.querySelector('[data-save-png]').disabled)throw Error(document.querySelector('[data-export-error]').textContent);
+    const photo=document.querySelector('.export-preview img');
+    await photo.decode();
+    return [photo.naturalWidth,photo.naturalHeight];
+  }
   function quantile(numbers, q) {
     if (!numbers.length) return 0;
     const sorted = numbers.slice().sort((a, b) => a - b);
@@ -132,12 +139,14 @@
         world.querySelector('[data-boundary="province"],[data-boundary="prefecture"],svg svg') ||
         world.querySelector('desc')?.textContent.includes('概览边界'))throw Error('Expected the full-bleed world print map');
       report.worldViewBox=plate.getAttribute('viewBox');
+      report.overviewPng=await pngDimensions();
       document.querySelector('[data-close]').click();
 
       // Reproduce a rim grab that used to jump from the north pole to a
       // different inverse solution. Do this outside the timed comparisons.
+      await frame();await frame();
       document.querySelector('[data-map="reset"]').click();
-      await sleep(500);
+      await waitFor(()=>document.querySelector('[data-map="minus"]').disabled && !stage.classList.contains('is-moving'));
       const b=bounds(),cx=b.left+b.width/2,cy=b.top+b.height/2,r=.46*Math.min(b.width,b.height);
       const latitude=()=>{
         const m=document.querySelector('.earth-readout').textContent.match(/([\d.]+)°([NS])/);
@@ -151,7 +160,7 @@
       await frame();await frame();
       const sx=cx-r*.8,sy=cy-r*.55;
       let previous=latitude(),maxStep=0;
-      if(Math.abs(previous-35)>1)throw Error('Polar drag test did not reach its start pose');
+      if(Math.abs(previous-35)>1)throw Error('Polar drag start latitude: '+previous);
       dispatch('pointerdown',1,sx,sy);
       for(const i of [...Array.from({length:72},(_,i)=>i+1),...Array.from({length:30},(_,i)=>71-i)]){
         dispatch('pointermove',1,sx+i,sy+i*.13);await frame();
@@ -175,12 +184,8 @@
       if(!world.querySelector('[data-pin="820000"]') || !world.querySelector('[data-country="BRA"]') ||
         world.querySelector('[data-city="820000"]')?.getAttribute('fill')!=='#ff976f')throw Error('Missing Macau or the opposite hemisphere');
       if(report.worldViewBox && world.documentElement.getAttribute('viewBox')!==report.worldViewBox)throw Error('Export follows the local camera');
-      await waitFor(()=>!document.querySelector('[data-save-png]').disabled || !document.querySelector('[data-export-error]').hidden);
-      if(document.querySelector('[data-save-png]').disabled)throw Error(document.querySelector('[data-export-error]').textContent);
-      const photo=document.querySelector('.export-preview img');
-      await photo.decode();
-      report.worldPng=[photo.naturalWidth,photo.naturalHeight];
-      if(photo.naturalWidth!==4096 || photo.naturalHeight!==Number(world.documentElement.getAttribute('height')))throw Error('Unexpected PNG dimensions');
+      report.worldPng=await pngDimensions();
+      if(report.worldPng[0]!==4096 || report.worldPng[1]!==Number(world.documentElement.getAttribute('height')))throw Error('Unexpected PNG dimensions');
     }
     report.exportReady=true;report.workerProjections=projections;report.glyphBatches=glyphBatches;report.contextEvents=contextEvents;
     if(fallback && (report.renderer!=='svg'||!projections))throw Error('SVG worker fallback did not run');

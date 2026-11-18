@@ -35,21 +35,20 @@ export function createMapSvgBlob(snapshot) {
   return new Blob(['<?xml version="1.0" encoding="UTF-8"?>\n', snapshot.svg], { type: 'image/svg+xml;charset=utf-8' });
 }
 
-export async function renderMapPng(snapshot, { signal } = {}) {
+export async function renderMapPng(snapshot, { image, svgUrl, signal }) {
   if (signal?.aborted) throw new DOMException('已取消', 'AbortError');
-  const url = URL.createObjectURL(createMapSvgBlob(snapshot));
   const canvas = document.createElement('canvas');
-  const img = new Image();
   try {
     await new Promise((resolve, reject) => {
+      if (image.src === svgUrl && image.complete && image.naturalWidth > 0) { resolve(); return; }
       const fail = error => { cleanup(); reject(error); };
       const abort = () => fail(new DOMException('已取消', 'AbortError'));
       const timeout = setTimeout(() => fail(new Error('生成图片超时，请重试')), 15000);
-      function cleanup() { clearTimeout(timeout); signal?.removeEventListener('abort', abort); img.onload = null; img.onerror = null; }
-      img.onload = () => { cleanup(); resolve(); };
-      img.onerror = () => fail(new Error('图片生成失败，请重试'));
+      function cleanup() { clearTimeout(timeout); signal?.removeEventListener('abort', abort); image.onload = null; image.onerror = null; }
+      image.onload = () => { cleanup(); resolve(); };
+      image.onerror = () => fail(new Error('图片生成失败，请重试'));
       signal?.addEventListener('abort', abort, { once: true });
-      img.src = url;
+      image.src = svgUrl;
     });
     if (signal?.aborted) throw new DOMException('已取消', 'AbortError');
     canvas.width = snapshot.pixelWidth;
@@ -58,13 +57,11 @@ export async function renderMapPng(snapshot, { signal } = {}) {
     if (!context) throw new Error('当前浏览器不支持图片导出，请更换浏览器');
     context.imageSmoothingEnabled = true;
     context.imageSmoothingQuality = 'high';
-    context.drawImage(img, 0, 0, canvas.width, canvas.height);
+    context.drawImage(image, 0, 0, canvas.width, canvas.height);
     const blob = await new Promise((resolve, reject) => canvas.toBlob(value => value ? resolve(value) : reject(new Error('PNG 生成失败，请重试')), 'image/png'));
     if (signal?.aborted) throw new DOMException('已取消', 'AbortError');
     return blob;
   } finally {
-    img.src = '';
-    URL.revokeObjectURL(url);
     canvas.width = canvas.height = 1;
   }
 }

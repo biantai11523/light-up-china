@@ -10,12 +10,19 @@ import { openApp, until, searchAndSelect, enterDemo } from './ui-harness.mjs';
 function measureMap(document,width=390,height=390){
   document.querySelector('.map-stage').getBoundingClientRect=()=>({width,height,left:0,top:0});
 }
+function decodePreview(w,blobs) {
+  const proto=w.HTMLImageElement.prototype, src=Object.getOwnPropertyDescriptor(proto,'src');
+  Object.defineProperty(proto,'src',{...src,set(url){
+    src.set.call(this,url);
+    const blob=blobs.get(url);
+    if(blob?.type.startsWith('image/svg+xml'))blob.text().then(text=>{this.svg=text;this.onload?.();});
+  }});
+}
 test('full-bleed world exports preserve all four view palettes and both hemispheres from any camera',async()=>{
   const f=fixture(), blobs=new Map();
   const w=await openApp(f,{configure(w){
     w.URL.createObjectURL=blob=>{const key='blob:https://example.test/'+crypto.randomUUID();blobs.set(key,blob);return key;};
     w.URL.revokeObjectURL=()=>{};
-    w.Image=class{set src(url){if(url)queueMicrotask(()=>this.onerror?.());}};
   }}),d=w.document;
   try{
     measureMap(d);enterDemo(d);
@@ -69,11 +76,11 @@ test('the world plate is 4096 pixels wide and keeps offline and source informati
   assert.ok(!s.svg.includes('undefined'));
 });
 test('export dialog supplies a PNG download even when system file sharing is unsupported',async()=>{
-  const f=fixture();const blobs=new Map(),downloads=[];
+  const f=fixture();const blobs=new Map(),downloads=[];let vectorFiles=0;
   const w=await openApp(f,{configure(w){
-    w.URL.createObjectURL=blob=>{const url=`blob:https://example.test/${crypto.randomUUID()}`;blobs.set(url,blob);return url;};
+    w.URL.createObjectURL=blob=>{const url=`blob:https://example.test/${crypto.randomUUID()}`;blobs.set(url,blob);if(blob.type.startsWith('image/svg+xml'))vectorFiles++;return url;};
     w.URL.revokeObjectURL=url=>blobs.delete(url);
-    w.Image=class{set src(url){if(url)blobs.get(url).text().then(text=>{this.svg=text;this.onload?.();});}};
+    decodePreview(w,blobs);
     w.HTMLCanvasElement.prototype.getContext=function(){return{drawImage:image=>{this.sourceSvg=image.svg;}};};
     w.HTMLCanvasElement.prototype.toBlob=function(callback){const bytes=new Resvg(this.sourceSvg,{fitTo:{mode:'width',value:this.width}}).render().asPng();callback(new w.Blob([bytes],{type:'image/png'}));};
     w.HTMLAnchorElement.prototype.click=function(){downloads.push({url:this.href,name:this.download});};
@@ -88,6 +95,7 @@ test('export dialog supplies a PNG download even when system file sharing is uns
     const preview=d.querySelector('.export-preview img');assert.ok(preview);assert.equal(d.querySelector('[data-share-png]'),null);
     const blob=blobs.get(preview.src);assert.equal(blob.type,'image/png');assert.ok(blob.size>30000);
     const png=new DataView(await blob.arrayBuffer());
+    assert.equal(vectorFiles,1,'the preview and PNG share one decoded vector file');
     assert.equal(png.getUint32(16),4096);assert.equal(png.getUint32(20),Math.round(4096*MAP_HEIGHT/MAP_WIDTH));
     d.querySelector('[data-save-png]').click();assert.equal(downloads.length,2);assert.match(downloads[1].name,/\.png$/);assert.equal(downloads[1].url,preview.src);
     assert.deepEqual((await(await f.request('/api/state')).json()).records,{});
@@ -108,7 +116,7 @@ test('SVG remains downloadable if the device cannot create the high-resolution P
   const w=await openApp(f,{configure(w){
     w.URL.createObjectURL=blob=>{const url=`blob:https://example.test/${crypto.randomUUID()}`;blobs.set(url,blob);return url;};
     w.URL.revokeObjectURL=url=>blobs.delete(url);
-    w.Image=class{set src(url){if(url)Promise.resolve().then(()=>this.onload?.());}};
+    decodePreview(w,blobs);
     w.HTMLCanvasElement.prototype.getContext=()=>null;
     w.HTMLAnchorElement.prototype.click=function(){downloads.push({name:this.download,url:this.href});};
   }}),d=w.document;
