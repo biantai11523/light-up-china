@@ -1,0 +1,42 @@
+name: iOS globe interaction check
+on:
+  workflow_dispatch:
+    inputs:
+      baseline:
+        description: Optional reference commit for the timing comparison
+        required: false
+  push:
+    branches: ['qa/globe-*']
+  pull_request:
+    paths: ['src/earth/**', 'tests/ios/**', '.github/workflows/ios-globe.yml']
+permissions:
+  contents: read
+concurrency:
+  group: ios-globe-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  webkit:
+    runs-on: macos-26
+    timeout-minutes: 22
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 0, persist-credentials: false}
+      - uses: actions/setup-node@v4
+        with: {node-version: '24', cache: npm}
+      - run: npm ci && npm run build
+      - name: Build reference on the same runner
+        env:
+          BASE_REF: ${{ inputs.baseline || github.event.pull_request.base.sha || 'origin/main' }}
+        run: |
+          ref=$(git rev-parse --verify --end-of-options "${BASE_REF}^{commit}")
+          git worktree add --detach "$RUNNER_TEMP/reference" "$ref"
+          cd "$RUNNER_TEMP/reference"
+          npm ci && npm run build
+      - name: Exercise both builds on iPhone 17 Pro Simulator
+        run: python3 tests/ios/run.py "$RUNNER_TEMP/reference/dist" dist
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ios-globe-results
+          path: artifacts/ios/
+          retention-days: 14
